@@ -458,7 +458,7 @@ async function findPath(event) {
       directed: $("#directed").checked,
       type: $("#path-type").value,
     });
-    const r = await fetch("/api/paths?" + q);
+    const r = await window.StockAtlasData.fetch("/api/paths?" + q);
     if (!r.ok)
       throw Error(
         "Connection search is temporarily unavailable. Please try again.",
@@ -663,7 +663,7 @@ window.addEventListener("hashchange", () => {
 window.addEventListener("resize", () => requestAnimationFrame(drawLines));
 async function init() {
   try {
-    const r = await fetch("/api/atlas");
+    const r = await window.StockAtlasData.fetch("/api/atlas");
     if (!r.ok) throw Error("The atlas could not be loaded.");
     A = await r.json();
     byId = new Map(A.nodes.map((n) => [n.id, n]));

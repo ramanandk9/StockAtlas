@@ -99,7 +99,7 @@
           }).format(new Date(value * 1000)) + " IST"
         : "not recorded";
     try {
-      const response = await fetch("/api/freshness", { cache: "no-store" });
+      const response = await window.StockAtlasData.fetch("/api/freshness", { cache: "no-store" });
       if (!response.ok) throw Error("Freshness unavailable");
       const data = await response.json();
       const refresh = data.refresh || {};
@@ -130,7 +130,7 @@
         !refresh.running && ["partial", "error"].includes(refresh.status),
       );
       badge.title = [
-        "Prices through: " + (data.priceAsOf || "unavailable"),
+        (data.staticSnapshot ? "Published snapshot. Prices through: " : "Prices through: ") + (data.priceAsOf || "unavailable"),
         "Price download: " + formatTime(data.pricesFetchedAt),
         "Models through: " + (data.modelsAsOf || "unavailable"),
         "Model computation: " + formatTime(data.modelsComputedAt),
@@ -149,5 +149,5 @@
   }
   updateFreshness();
   window.addEventListener("focus", updateFreshness);
-  setInterval(updateFreshness, 15000);
+  if (!window.STOCKATLAS_STATIC) setInterval(updateFreshness, 15000);
 })();

@@ -1717,3 +1717,4 @@ main > .navbar {
   font-size: 20px;
   margin-right: 5px;
 }
+.snapshot-notice { margin: 12px 0; padding: 10px 12px; border: 1px solid #c5d9cf; border-radius: 8px; background: #edf5f0; color: #284c3b; font-size: 11px; line-height: 1.8; }

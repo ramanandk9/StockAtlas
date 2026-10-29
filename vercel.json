@@ -1,6 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "flask",
+  "framework": null,
   "regions": ["bom1"],
-  "buildCommand": "python vercel_build.py"
+  "installCommand": "echo 'Serving the committed StockAtlas snapshot'",
+  "buildCommand": "python3 vercel_build.py",
+  "outputDirectory": "public",
+  "cleanUrls": true,
+  "headers": [
+    {"source": "/data/(.*)", "headers": [{"key": "Cache-Control", "value": "public, max-age=0, must-revalidate"}]},
+    {"source": "/static/(.*)", "headers": [{"key": "Cache-Control", "value": "public, max-age=0, must-revalidate"}]}
+  ]
 }

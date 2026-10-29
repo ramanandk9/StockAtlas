@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script>window.STOCKATLAS_STATIC = {{ static_export | default(false) | tojson }};</script>
+<script src="/static/data-source.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Markets & research — StockAtlas</title>
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
@@ -20,7 +22,7 @@
 {% include 'navigation.html' %}
 <div class="app" id="app">
   <aside class="left">
-    <div class="sub" id="asof">Loading…</div>
+    <div class="sub" id="asof">Loading…</div>{% if static_export %}<p class="snapshot-notice">Published snapshot · read-only<br>Prices and models update when a new snapshot is published. Charts include up to 5 years of saved daily prices.</p>{% endif %}
     <div class="qwrap"><input type="search" id="q" placeholder="Search company or ticker… (e.g. TATA)" autocomplete="off">
       <div id="qsug"></div></div>
     <div class="sect-title hk" data-help="sector-median">Sectors › segments · median 1Y</div>
@@ -61,7 +63,7 @@ const stars = t => t == null ? '' : Math.abs(t) >= 2.58 ? '***' : Math.abs(t) >=
 const pstars = p => p == null ? '' : p < 0.01 ? '***' : p < 0.05 ? '**' : p < 0.1 ? '*' : '';
 const encId = id => encodeURIComponent(id);
 
-async function j(url){ const r = await fetch(url); if(!r.ok) throw new Error(url + ' ' + r.status); return r.json(); }
+async function j(url){ return window.StockAtlasData.json(url); }
 
 function spark(arr, w=100, h=26){
   if(!arr || arr.length < 2) return '';
@@ -681,11 +683,11 @@ function renderCompany(c, inf, MD, keepScroll){
     map: `<div class="card"><h3>Dependency map — relies on (left) → company → relied on by (right)</h3><div id="egoflow"></div></div>`,
     keynums: `<div class="card"><h3>Key numbers · ${esc(m.asof || '')} <button class="btn edit" id="kn-edit">✎ Edit</button></h3><div id="keynums"></div></div>`,
     chart: `<div class="card"><h3>Price trend</h3>
-        <div class="periods" id="periods">${['1mo','3mo','6mo','1y','2y','5y','max'].map(p => `<button class="chip ${p===PREF.period?'on':''}" data-p="${p}">${p.toUpperCase()}</button>`).join('')}
+        <div class="periods" id="periods">${['1mo','3mo','6mo','1y','2y','5y','max'].map(p => `<button class="chip ${p===PREF.period?'on':''}" data-p="${p}">${window.STOCKATLAS_STATIC && p === 'max' ? 'ALL SAVED' : p.toUpperCase()}</button>`).join('')}
           <span style="width:14px"></span>
           <button class="chip ${PREF.dma50 ? 'on' : ''}" data-dma="dma50" style="${PREF.dma50 ? 'color:#a36b20;border-color:#a36b20' : ''}">50-day avg</button>
           <button class="chip ${PREF.dma100 ? 'on' : ''}" data-dma="dma100" style="${PREF.dma100 ? 'color:#8662c3;border-color:#8662c3' : ''}">100-day avg</button></div>
-        <div style="height:280px"><canvas id="pc"></canvas></div>
+        <div class="sub" id="history-note" style="margin:8px 0"></div><div style="height:280px"><canvas id="pc"></canvas></div>
         <div class="sub" style="margin-top:4px">Price above its 50/100-day average = short/medium-term uptrend; below = downtrend. 5Y/MAX use weekly bars (10/20-week averages).</div></div>`,
     fin: `<div class="card"><h3>Financials & growth (annual, consolidated)</h3><div id="finbox"><div class="loading">Loading financials…</div></div></div>`,
     news: `<div class="card"><h3>Latest news</h3><div id="newsbox"><div class="loading">Loading news…</div></div></div>`,
@@ -833,7 +835,7 @@ async function loadNews(cid){
   if(!$('#newsbox')) return;
   let d; try { d = await j('/api/news?cid=' + encId(cid)); } catch { d = {items: []}; }
   if(cur?.id !== cid || !$('#newsbox')) return;
-  $('#newsbox').innerHTML = newsList(d.items.slice(0, 8)) + '<div class="sub" style="margin-top:6px">Headlines via Google News (last 30 days). Opens the original article.</div>';
+  $('#newsbox').innerHTML = (d.note ? `<div class="empty">${esc(d.note)}</div>` : newsList(d.items.slice(0, 8))) + '<div class="sub" style="margin-top:6px">Headlines via Google News (last 30 days). Opens the original article.</div>';
 }
 
 // Chart.js loads with `defer` so it never blocks the first paint
@@ -845,6 +847,7 @@ async function drawCharts(c, period){
   const h = await j(`/api/history/${encId(c.id)}?period=${period}&compare=${ids.map(encodeURIComponent).join(',')}`);
   await chartReady();
   if(cur !== c) return;
+  if ($('#history-note')) $('#history-note').textContent = window.STOCKATLAS_STATIC ? (h.dates.length ? `Saved prices: ${h.dates[0]} to ${h.dates.at(-1)}. Available archive: up to 5 years.` : 'No saved price history is available for this company.') : '';
   const main = h.series[c.id] || [];
   const first = main.find(v => v != null), up = main.length && main[main.length-1] >= first;
   const grid = {color:'#dfe7dd'}, tick = {color:'#6b7c80', maxTicksLimit:8};
@@ -926,16 +929,16 @@ async function showModel(){
       </div>
 
       <div class="card"><h3>Add a news event to the model</h3>
-        <div class="sub">Add a recent geopolitical / economic event (date of the news). The event study and the geo stance are then recomputed, which takes a few minutes. ${d.canEdit ? '' : '<b>Only the site owner can add events</b> (open the site from the server machine, or set ADMIN_TOKEN).'}</div>
-        <div class="form-row">
+        <div class="sub">Add a recent geopolitical / economic event (date of the news). The event study and the geo stance are then recomputed, which takes a few minutes. ${d.staticSnapshot ? '<b>Published snapshots are read-only. Add events locally, recalculate and republish.</b>' : d.canEdit ? '' : '<b>Only the site owner can add events</b> (open the site from the server machine, or set ADMIN_TOKEN).'}</div>
+        <fieldset class="form-row" ${d.staticSnapshot ? 'disabled hidden' : ''} style="border:0;padding:0;margin:0">
           <input type="date" id="ev-day" max="${new Date().toISOString().slice(0,10)}">
           <input type="text" id="ev-name" placeholder="e.g. US–India trade deal signed" style="flex:1;min-width:240px">
           <label class="sub">window <select id="ev-win">${[1,2,3,5,10].map(w => `<option ${w === 3 ? 'selected' : ''}>${w}</option>`).join('')}</select> days</label>
           <label class="sub"><input type="checkbox" id="ev-shock" checked> geopolitical shock (feeds geo score)</label>
           <input type="password" id="ev-tok" placeholder="admin token" style="width:120px;${d.canEdit ? 'display:none' : ''}">
           <button class="btn" id="ev-add">Add event</button><span class="sub" id="ev-msg"></span>
-        </div>
-        ${evs.some(e => e.custom) ? `<div class="sub" style="margin-top:10px">Added events: ${evs.filter(e => e.custom).map(e => `${esc(e.day)} ${esc(e.name)} <a href="#" data-del="${esc(e.id)}">remove</a>`).join(' · ')}</div>` : ''}
+        </fieldset>
+        ${!d.staticSnapshot && evs.some(e => e.custom) ? `<div class="sub" style="margin-top:10px">Added events: ${evs.filter(e => e.custom).map(e => `${esc(e.day)} ${esc(e.name)} <a href="#" data-del="${esc(e.id)}">remove</a>`).join(' · ')}</div>` : ''}
       </div>
 
       <div class="card"><h3>Scenarios</h3><table><tbody>${(d.scenarios||[]).map(s => `<tr><td style="text-align:left"><b>${esc(s.name)}</b></td><td class="sub" style="text-align:left">${Object.entries(s.shocks).map(([k,v]) => `${esc(d.factors?.[k] || k)} ${v > 0 ? '+' : ''}${k === 'UST10' ? v + 'pp' : (v*100).toFixed(0) + '%'}`).join(', ')}</td></tr>`).join('')}</tbody></table>
@@ -947,12 +950,12 @@ async function showModel(){
   $('#ev-add').onclick = async () => {
     const body = {day: $('#ev-day').value, name: $('#ev-name').value.trim(), win: +$('#ev-win').value, shock: $('#ev-shock').checked};
     if(!body.day || !body.name){ $('#ev-msg').textContent = 'Enter a date and a name.'; return; }
-    const r = await fetch('/api/events', {method:'POST', headers:{'Content-Type':'application/json', 'X-Admin-Token': $('#ev-tok').value}, body: JSON.stringify(body)});
+    const r = await window.StockAtlasData.fetch('/api/events', {method:'POST', headers:{'Content-Type':'application/json', 'X-Admin-Token': $('#ev-tok').value}, body: JSON.stringify(body)});
     $('#ev-msg').textContent = r.ok ? 'Added. Recomputing models (a few minutes)…' : r.status === 403 ? 'Not allowed: owner only.' : 'Invalid date or name.';
     if(r.ok){ S.model = 'pending'; setTimeout(pollModel, 3000); }
   };
   document.querySelectorAll('[data-del]').forEach(a => a.onclick = async e => { e.preventDefault();
-    const r = await fetch('/api/events/' + encodeURIComponent(a.dataset.del), {method:'DELETE', headers:{'X-Admin-Token': $('#ev-tok').value}});
+    const r = await window.StockAtlasData.fetch('/api/events/' + encodeURIComponent(a.dataset.del), {method:'DELETE', headers:{'X-Admin-Token': $('#ev-tok').value}});
     if(r.ok){ S.model = 'pending'; setTimeout(pollModel, 3000); showModel(); } else $('#ev-msg').textContent = 'Not allowed: owner only.'; });
   drawHeat(d);
 }
@@ -1040,14 +1043,14 @@ const NEWS_T = {market:'Indian markets', geo:'Geopolitics & trade', economy:'Eco
 let newsTopic = 'market';
 async function showNews(){
   S.view = 'news';
-  $('#main').innerHTML = shell('news') + `<div class="hdr"><span class="sub">Google News headlines, last 30 days · refreshed every 30 min</span></div>
+  $('#main').innerHTML = shell('news') + `<div class="hdr"><span class="sub">${window.STOCKATLAS_STATIC ? 'Published snapshot · live headlines are not included' : 'Google News headlines, last 30 days · refreshed every 30 min'}</span></div>
     <div class="chips" style="margin-bottom:12px">${Object.entries(NEWS_T).map(([k, l]) => `<button class="chip ${k === newsTopic ? 'on' : ''}" data-nt="${k}">${l}</button>`).join('')}</div>
     <div class="card" id="newsmain"><div class="loading">Loading…</div></div>`;
   bindTabs();
   document.querySelectorAll('[data-nt]').forEach(b => b.onclick = () => { newsTopic = b.dataset.nt; showNews(); });
   const d = await j('/api/news?topic=' + newsTopic).catch(() => ({items: []}));
   if(S.view !== 'news') return;
-  $('#newsmain').innerHTML = newsList(d.items) + '<div class="sub" style="margin-top:8px">Each stock screen also has its own <b>Latest news</b> card.</div>';
+  $('#newsmain').innerHTML = (d.note ? `<div class="empty">${esc(d.note)}</div>` : newsList(d.items)) + '<div class="sub" style="margin-top:8px">Each stock screen also has its own <b>Latest news</b> card.</div>';
 }
 
 /* ================= hover tooltip ================= */
@@ -1150,6 +1153,7 @@ $('#q').addEventListener('keydown', e => {
   else if(e.key === 'Escape'){ hideSug(); }
 });
 async function pollModel(){
+  if(window.STOCKATLAS_STATIC) return;
   if(S.model === 'ready') return;
   try {
     const m = await j('/api/model');

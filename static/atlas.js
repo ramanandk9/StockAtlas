@@ -170,6 +170,8 @@ function render() {
   document.title = `${t[2]} — StockAtlas`;
   $("#main").setAttribute("aria-label", t[2]);
   $("#main").classList.toggle("welcome-mode", state.view === "welcome");
+  document.body.classList.toggle("welcome-landing", state.view === "welcome");
+  document.querySelector(".stock-navigation").hidden = state.view === "welcome";
   document.querySelectorAll("[data-view]").forEach((a) => {
     a.classList.toggle("active", a.dataset.view === state.view);
     if (a.dataset.view === state.view) a.setAttribute("aria-current", "page");

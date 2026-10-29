@@ -1,63 +1,49 @@
 <div class="welcome-page">
   <section class="welcome-hero">
     <div class="welcome-intro">
+      <div class="welcome-brand"><img src="{{ url_for('static', filename='tmrm-logo.svg') }}" width="32" height="52" alt="" /><span>StockAtlas</span></div>
       <span class="welcome-kicker">THE BUSINESS BEHIND THE STOCK</span>
-      <h1>No company<br />works alone.</h1>
-      <p>
-        StockAtlas brings company relationships and financial research into one
-        place. See what a business relies on, who it supports, and how it fits
-        into the wider market.
-      </p>
-      <div class="welcome-actions">
-        <a class="button primary" href="#explore/TCS"
-          >Explore the connections <span aria-hidden="true">→</span></a
-        ><a class="button" href="/research">Open research</a>
-      </div>
-      <p class="welcome-small">
-        Start with a company you know. Follow the story from there.
-      </p>
+      <h1>Every stock has a story.<br />Follow the connections.</h1>
+      <p>Discover the suppliers, customers and owners behind a company.<br class="welcome-desktop-break" /> Connect the business network with the numbers that matter.</p>
     </div>
-    <div
-      class="welcome-example"
-      aria-label="Example: Tejas Networks supplies TCS, which provides services to BSNL"
-    >
-      <div class="welcome-example-label">
-        ONE COMPANY. TWO SIDES OF THE STORY.
-      </div>
-      <div class="welcome-example-node">
-        <span class="welcome-initials">TN</span>
-        <div>
-          <strong>Tejas Networks</strong
-          ><small>Supplies network equipment</small>
-        </div>
-        <span class="welcome-role">Supplier</span>
-      </div>
-      <div class="welcome-flow" aria-hidden="true">
-        <span>↓</span><small>Goods flow into the business</small>
-      </div>
-      <div class="welcome-example-node welcome-example-focus">
-        <span class="welcome-initials">TC</span>
-        <div>
-          <strong>Tata Consultancy Services</strong
-          ><small>The company you are exploring</small>
-        </div>
-      </div>
-      <div class="welcome-flow" aria-hidden="true">
-        <span>↓</span><small>Services reach a customer</small>
-      </div>
-      <div class="welcome-example-node">
-        <span class="welcome-initials">B</span>
-        <div>
-          <strong>BSNL</strong
-          ><small>Receives network implementation services</small>
-        </div>
-        <span class="welcome-role">Customer</span>
-      </div>
-      <p class="welcome-example-note">
-        An example from our curated map. Arrows show what flows, not how much a
-        company depends on it.
-      </p>
+    <div class="welcome-network">
+      <svg viewBox="0 0 800 340" role="img" aria-labelledby="welcome-graph-title welcome-graph-desc">
+        <title id="welcome-graph-title">A glimpse inside the company network</title>
+        <desc id="welcome-graph-desc">Tata Sons is a promoter of TCS. Tejas Networks supplies equipment to TCS, which provides network implementation services to BSNL. These are curated relationships, not measured dependency weights.</desc>
+        <defs>
+          <pattern id="atlas-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#e2eae5"/></pattern>
+          <marker id="atlas-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#6f8d7d"/></marker>
+          <filter id="atlas-node-shadow" x="-25%" y="-40%" width="150%" height="190%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#234c38" flood-opacity=".1"/></filter>
+        </defs>
+        <rect width="800" height="340" rx="20" fill="url(#atlas-dots)"/>
+        <g class="welcome-network-lines" fill="none" stroke="#6f8d7d" stroke-width="1.5" marker-end="url(#atlas-arrow)">
+          <path d="M400 95V174"/>
+          <path d="M224 216H300"/>
+          <path d="M500 216H576"/>
+        </g>
+        <g class="welcome-edge-labels" text-anchor="middle"><text x="447" y="139">Ownership</text><text x="262" y="202">Supplies</text><text x="538" y="202">Services</text></g>
+        <g class="welcome-network-node" filter="url(#atlas-node-shadow)">
+          <rect x="308" y="27" width="184" height="68" rx="12" fill="white" stroke="#d5e2da"/>
+          <text x="400" y="56" text-anchor="middle" class="network-name">Tata Sons</text><text x="400" y="76" text-anchor="middle" class="network-detail">Promoter</text>
+        </g>
+        <g class="welcome-network-node" filter="url(#atlas-node-shadow)">
+          <rect x="24" y="174" width="200" height="84" rx="12" fill="white" stroke="#d5e2da"/>
+          <text x="124" y="209" text-anchor="middle" class="network-name">Tejas Networks</text><text x="124" y="231" text-anchor="middle" class="network-detail">Network equipment</text>
+        </g>
+        <g class="welcome-network-node welcome-network-center" filter="url(#atlas-node-shadow)">
+          <rect x="300" y="174" width="200" height="84" rx="12" fill="#185d49"/>
+          <text x="400" y="210" text-anchor="middle" class="network-name">TCS</text><text x="400" y="232" text-anchor="middle" class="network-detail">The company in focus</text>
+        </g>
+        <g class="welcome-network-node" filter="url(#atlas-node-shadow)">
+          <rect x="576" y="174" width="200" height="84" rx="12" fill="white" stroke="#d5e2da"/>
+          <text x="676" y="209" text-anchor="middle" class="network-name">BSNL</text><text x="676" y="231" text-anchor="middle" class="network-detail">Network implementation</text>
+        </g>
+        <text x="400" y="307" text-anchor="middle" class="network-caption">One company. A connected business world.</text>
+      </svg>
+      <p class="welcome-network-note">An example from the curated atlas. Arrows show what flows, not the size of a dependency.</p>
     </div>
+    <div class="welcome-actions"><a class="button primary" href="#explore/TCS">Open atlas <span aria-hidden="true">↗</span></a></div>
+    <p class="welcome-hero-footnote">Start with a company you know. See where it takes you.</p>
   </section>
 
   <section class="welcome-coverage" aria-label="Current atlas coverage">

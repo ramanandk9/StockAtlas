@@ -31,7 +31,7 @@ body.welcome-landing { background: #fff; }
 .network-caption { fill: #496253; font-size: 12px; letter-spacing: .4px; }
 .welcome-network-note { margin: 12px auto 0; text-align: center; max-width: 600px; font-size: 11px; line-height: 1.8; color: #66786c; }
 .welcome-hero-footnote { font-size: 12px; text-align: center; color: #586d60; }
-.welcome-hero .welcome-actions { margin: 0; }
+.welcome-hero .welcome-actions { margin: 0 0 24px; }
 .welcome-hero .welcome-actions .button { min-width: 180px; display: inline-flex; justify-content: center; gap: 28px; font-size: 15px; padding: 15px 24px; }
 .welcome-coverage { display: flex; flex-direction: column; border: 1px solid #e0e7e1; border-radius: 16px; background: white; padding: 8px 26px; margin-bottom: 64px; box-shadow: var(--welcome-shadow); }
 .welcome-coverage > div { display: flex; align-items: center; gap: 24px; padding: 17px 0; border-bottom: 1px solid #edf0ed; }

@@ -1,4 +1,5 @@
 "use strict";
+let welcomeObserver;
 const $ = (s) => document.querySelector(s);
 const esc = (v) =>
   String(v ?? "").replace(
@@ -196,6 +197,7 @@ function render() {
           : state.view === "paths"
             ? pathForm()
             : guide();
+  welcomeObserver?.disconnect();
   if (state.view === "welcome") {
     const counts = {
       companies: A.nodes.filter((n) => n.kind === "company").length,
@@ -210,6 +212,20 @@ function render() {
           (el.textContent =
             counts[el.dataset.welcomeCount].toLocaleString("en-IN")),
       );
+    if ("IntersectionObserver" in window && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      welcomeObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-visible");
+            welcomeObserver.unobserve(entry.target);
+          }
+        }
+      }, { threshold: 0.08 });
+      document.querySelectorAll(".welcome-coverage, .welcome-section-heading, .welcome-feature-grid article, .welcome-instructions, .welcome-roadmap, .welcome-closing").forEach((el) => {
+        el.classList.add("welcome-reveal");
+        welcomeObserver.observe(el);
+      });
+    }
   }
   if (state.view === "explore") requestAnimationFrame(drawLines);
 }

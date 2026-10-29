@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="Explore the companies, suppliers, customers and investors connected to Indian businesses."
+    />
+    <title>StockAtlas — Follow the connections</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='atlas.css') }}"
+    />
+    <script defer src="{{ url_for('static', filename='atlas.js') }}"></script>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='navigation.css') }}"
+    />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="{{ url_for('static', filename='tmrm-logo.svg') }}"
+    />
+    <meta name="application-name" content="StockAtlas" />
+    <meta name="theme-color" content="#f0f3ed" />
+    <meta property="og:title" content="StockAtlas" />
+    <meta
+      property="og:description"
+      content="Explore Indian company relationships, financials and market research."
+    />
+    <script
+      defer
+      src="{{ url_for('static', filename='navigation.js') }}"
+    ></script>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='welcome.css') }}"
+    />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    {% set research_mode = false %} {% include 'navigation.html' %}
+    <div class="workspace">
+      <main id="main" tabindex="-1">
+        <section class="search-section">
+          <div class="search-wrap">
+            <span class="search-icon">⌕</span
+            ><input
+              id="search"
+              type="search"
+              placeholder="Search a company, ticker or organisation…"
+              aria-label="Search companies and organisations"
+              autocomplete="off"
+              role="combobox"
+              aria-controls="search-results"
+              aria-expanded="false"
+            /><kbd>/</kbd>
+            <div
+              id="search-results"
+              class="search-results"
+              role="listbox"
+              hidden
+            ></div>
+          </div>
+          <span class="search-hint" id="search-hint"
+            >Loading the relationship atlas…</span
+          >
+          <button class="button subtle" id="share">Share view</button>
+        </section>
+        <div id="content" aria-live="polite">
+          <div class="loading">Opening the atlas…</div>
+        </div>
+        <footer class="page-footer">
+          <span
+            >© 2026
+            <a href="https://tmrm.in/" target="_blank" rel="noopener"
+              >The Meta Research Matrix (tmrm.in)</a
+            ></span
+          >
+          <span
+            >Curated map · Coverage is incomplete · Not investment advice</span
+          >
+        </footer>
+      </main>
+    </div>
+    <template id="welcome-template">{% include 'welcome.html' %}</template>
+    <div class="toast" id="toast" role="status" hidden></div>
+    <dialog id="relation-dialog">
+      <button
+        class="dialog-close icon-button"
+        aria-label="Close connection details"
+      >
+        ×
+      </button>
+      <div id="relation-content"></div>
+    </dialog>
+  </body>
+</html>

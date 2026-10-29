@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "flask",
+  "regions": ["bom1"],
+  "buildCommand": "python vercel_build.py"
+}

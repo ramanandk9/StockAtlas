@@ -1,0 +1,1183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Markets & research — StockAtlas</title>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="/static/help.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='research.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='navigation.css') }}">
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='tmrm-logo.svg') }}">
+<meta name="application-name" content="StockAtlas">
+<meta name="theme-color" content="#f0f3ed">
+<meta property="og:title" content="StockAtlas">
+<meta property="og:description" content="Explore Indian company relationships, financials and market research.">
+<script defer src="{{ url_for('static', filename='navigation.js') }}"></script>
+</head>
+<body>
+{% set research_mode = true %}
+{% include 'navigation.html' %}
+<div class="app" id="app">
+  <aside class="left">
+    <div class="sub" id="asof">Loading…</div>
+    <div class="qwrap"><input type="search" id="q" placeholder="Search company or ticker… (e.g. TATA)" autocomplete="off">
+      <div id="qsug"></div></div>
+    <div class="sect-title hk" data-help="sector-median">Sectors › segments · median 1Y</div>
+    <div id="tree"></div>
+    <div class="disc">Prices & fundamentals: Yahoo Finance (yfinance). Stances, similarity and edge
+      evidence come from the statistical models on the <b>Model</b> tab. The relationship graph itself is curated
+      from public information and can be incomplete. Not investment advice.</div>
+  </aside>
+  <main id="main"></main>
+  <aside class="right"><button class="btn pclose" title="Hide this relationship panel (bring it back with ▤ Relationships)" onclick="setRight(false)">✕ Hide panel</button>
+    <div id="panel"><div class="empty">Select a company or node to see everything it receives, provides and resembles.</div></div></aside>
+</div>
+<footer class="research-credit"><span>© 2026 <a href="https://tmrm.in/" target="_blank" rel="noopener">The Meta Research Matrix (tmrm.in)</a></span><span>Curated map · Not investment advice</span></footer>
+<div id="tip"></div>
+
+
+<script>
+const S = {seg:null, sector:null, geo:'all', cap:'all', q:'', sort:'mcap', dir:-1, list:[], tree:[], view:'list', model:'pending', sel:null, allLabels:false,
+  f:{peMax:'', roeMin:'', sgMin:'', deMax:''}};
+/* user settings (layout of the stock screen, key numbers, chart options, panel) survive reloads */
+const PREF = Object.assign({right:true, sections:null, hidden:null, stats:null, period:'1y', dma50:true, dma100:true, zoom:null, allFactors:false},
+  JSON.parse(localStorage.getItem('imm.prefs') || '{}'));
+const savePref = () => localStorage.setItem('imm.prefs', JSON.stringify(PREF));
+function setRight(on){ PREF.right = on; savePref(); $('#app').classList.toggle('noright', !on); if(on && S.sel) showPanel(S.sel); }
+const infoCache = {};
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const cls = v => v == null ? 'flat' : v > 0 ? 'up' : v < 0 ? 'down' : 'flat';
+const pct = v => v == null ? '–' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+const pctR = (v, d=1) => v == null ? '–' : (v > 0 ? '+' : '') + (v * 100).toFixed(d) + '%';
+const inr = v => v == null ? '–' : '₹' + v.toLocaleString('en-IN', {maximumFractionDigits: 2});
+const cr = v => v == null ? '–' : '₹' + Math.round(v / 1e7).toLocaleString('en-IN') + ' Cr';
+const pctRatio = v => v == null ? '–' : (v * 100).toFixed(1) + '%';
+const num = (v, d=1) => v == null ? '–' : Number(v).toFixed(d);
+const STANCE = {tailwind:'Tailwind', headwind:'Headwind', mixed:'Mixed'};
+const stanceBadge = (s, score) => s ? `<span class="badge b-${s}" data-help="stance">${STANCE[s]}${score != null ? ' ' + (score > 0 ? '+' : '') + score.toFixed(2) : ''}</span>` : `<span class="badge b-pending">model…</span>`;
+const stars = t => t == null ? '' : Math.abs(t) >= 2.58 ? '***' : Math.abs(t) >= 1.96 ? '**' : Math.abs(t) >= 1.645 ? '*' : '';
+const pstars = p => p == null ? '' : p < 0.01 ? '***' : p < 0.05 ? '**' : p < 0.1 ? '*' : '';
+const encId = id => encodeURIComponent(id);
+
+async function j(url){ const r = await fetch(url); if(!r.ok) throw new Error(url + ' ' + r.status); return r.json(); }
+
+function spark(arr, w=100, h=26){
+  if(!arr || arr.length < 2) return '';
+  const mn = Math.min(...arr), mx = Math.max(...arr), rg = mx - mn || 1;
+  const pts = arr.map((v,i) => `${(i/(arr.length-1)*w).toFixed(1)},${(h - (v-mn)/rg*(h-2) - 1).toFixed(1)}`).join(' ');
+  const col = arr[arr.length-1] >= arr[0] ? 'var(--up)' : 'var(--down)';
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline fill="none" stroke="${col}" stroke-width="1.5" points="${pts}"/></svg>`;
+}
+
+/* ================= left tree ================= */
+const openSectors = new Set();
+async function loadTree(){
+  const t = await j('/api/tree');
+  S.tree = t.tree; S.model = t.model;
+  renderTree();
+}
+function renderTree(){
+  const total = S.tree.reduce((a, s) => a + s.count, 0);
+  let h = `<div class="row ${!S.seg && !S.sector ? 'active' : ''}" data-all="1"><span class="caret"></span><span class="lbl"><b>All companies</b> <span class="cnt">${total}</span></span></div>`;
+  for(const s of S.tree){
+    const open = openSectors.has(s.sector);
+    h += `<div class="sector ${open ? 'open' : ''}">
+      <div class="row ${S.sector === s.sector && !S.seg ? 'active' : ''}" data-sector="${esc(s.sector)}">
+        <span class="caret">${open ? '▼' : '▶'}</span>
+        <span class="lbl">${esc(s.sector)} <span class="cnt">${s.count}</span></span>
+        <span class="perf ${cls(s.y1)}">${pct(s.y1)}</span></div>
+      <div class="segs">${s.segments.map(g => `
+        <div class="row ${S.seg === g.key ? 'active' : ''}" data-seg="${g.key}" data-parent="${esc(s.sector)}">
+          <span class="lbl">${esc(g.label)} <span class="cnt">${g.count}</span></span>
+          <span class="perf ${cls(g.y1)}">${pct(g.y1)}</span></div>`).join('')}</div></div>`;
+  }
+  $('#tree').innerHTML = h;
+  $('#tree').querySelector('[data-all]').onclick = () => { S.seg = null; S.sector = null; renderTree(); scopeChanged(); };
+  $('#tree').querySelectorAll('[data-sector]').forEach(el => el.onclick = () => {
+    const sec = el.dataset.sector;
+    if(S.sector === sec && !S.seg && openSectors.has(sec)) openSectors.delete(sec); else openSectors.add(sec);
+    S.sector = sec; S.seg = null; renderTree(); scopeChanged();
+  });
+  $('#tree').querySelectorAll('[data-seg]').forEach(el => el.onclick = () => {
+    S.seg = el.dataset.seg; S.sector = el.dataset.parent; renderTree(); scopeChanged();
+  });
+}
+function scopeChanged(){ if(S.view === 'detail' || S.view === 'graph') S.view = 'list'; leaveEntry(); setHash(null); refreshView(); }
+const scopeQS = () => S.seg ? 'seg=' + S.seg : S.sector ? 'sector=' + encodeURIComponent(S.sector) : '';
+function scopeLabel(){
+  if(S.seg){ for(const s of S.tree){ const g = s.segments.find(x => x.key === S.seg); if(g) return `${s.sector} › ${g.label}`; } }
+  return S.sector || 'All companies';
+}
+
+/* ================= main shell ================= */
+/* ---------- stock-screen history: Back = undo, Forward = redo ----------
+   Every stock screen you open (full analysis, or a re-centred dependency map) is
+   pushed on one stack. Back/Forward walk that stack; opening a new stock after
+   going back drops the old forward branch, exactly like undo/redo. */
+const NAV = {stack: [], pos: -1, onEntry: false};
+// entries: {view:'detail', id} stock screen · {view:'ego', stock, id} a stock screen with its map re-centred on id
+//          {view:'map', id} dependency-map tab · {view:'list'|'model', seg, sector, label} the screen a stock was opened from
+const sameEntry = (a, b) => a && b && a.view === b.view && a.id === b.id && a.stock === b.stock && a.seg === b.seg && a.sector === b.sector;
+function navPush(view, id, extra={}){
+  const e = Object.assign({view, id}, extra);
+  if(!(NAV.onEntry && sameEntry(NAV.stack[NAV.pos], e))){
+    NAV.stack = NAV.stack.slice(0, NAV.pos + 1);   // new branch drops the redo part
+    NAV.stack.push(e);
+    NAV.pos = NAV.stack.length - 1;
+  }
+  NAV.onEntry = true;
+}
+// called right before leaving a non-stock screen for a stock, so ◀ Back can return to it
+function navPushOrigin(){
+  if(NAV.onEntry || !['list', 'model', 'impact', 'news'].includes(S.view)) return;
+  navPush(S.view, null, {seg: S.seg, sector: S.sector, label: {model:'Model', impact:'Who benefits?', news:'News'}[S.view] || 'Screener: ' + scopeLabel()});
+}
+function leaveEntry(){ NAV.onEntry = false; }          // went to list / model / another scope
+const navPrev = () => NAV.onEntry ? NAV.stack[NAV.pos - 1] : NAV.stack[NAV.pos];
+const navNext = () => NAV.onEntry ? NAV.stack[NAV.pos + 1] : null;
+async function navGo(i){
+  const e = NAV.stack[i]; if(!e) return;
+  NAV.pos = i; NAV.onEntry = true;
+  if(e.view === 'detail') return openCompany(e.id, false);
+  if(e.view === 'ego'){
+    if(!(S.view === 'detail' && cur?.id === e.stock)) await openCompany(e.stock, false);
+    S.sel = e.id; refreshNavBar(); renderFlow($('#egoflow'), e.id); showPanel(e.id); return;
+  }
+  if(e.view === 'map') return showFlow(e.id, false);
+  S.view = e.view; S.seg = e.seg; S.sector = e.sector;
+  if(S.sector) openSectors.add(S.sector);
+  renderTree(); setHash(null); refreshView();
+}
+function navBack(){ if(navPrev()) navGo(NAV.onEntry ? NAV.pos - 1 : NAV.pos); }
+function navFwd(){ if(navNext()) navGo(NAV.pos + 1); }
+const navLabel = e => !e ? '' : e.view === 'detail' ? e.id : e.view === 'map' ? e.id.replace(/^x:/, '') + ' (map)'
+  : e.view === 'ego' ? `${e.stock} → ${ENTNAME[e.id] || e.id.replace(/^x:/, '')}` : e.label;
+const ENTNAME = {};
+function navBar(){
+  const prev = navPrev(), next = navNext();
+  const from = Math.max(0, NAV.stack.length - 12);
+  const chips = NAV.stack.slice(from).map((e, k) => {
+    const i = from + k, here = NAV.onEntry && i === NAV.pos, future = NAV.onEntry && i > NAV.pos;
+    return `<a href="#" class="rchip ${here ? 'on' : ''} ${future ? 'future' : ''}" data-navi="${i}" ${e.view === 'detail' ? `data-cid="${esc(e.id)}"` : ''}>${esc(navLabel(e))}</a>`;
+  }).join('<span class="sub">›</span>');
+  if(!prev && !next && !chips) return '<div id="navbar" hidden></div>';
+  return `<div class="navbar" id="navbar">
+    <button class="btn navb" id="nav-back" title="Undo: back to the previous stock screen (Alt+← or Backspace)" ${prev ? '' : 'disabled'}>← Back</button>
+    <button class="btn navb" id="nav-fwd" title="Redo: forward again (Alt+→)" ${next ? '' : 'disabled'}>Forward →</button>
+    ${chips ? `<span class="sub" style="margin-left:6px">Recent:</span>${chips}` : ''}
+  </div>`;
+}
+function bindNav(){
+  $('#nav-back') && ($('#nav-back').onclick = navBack);
+  $('#nav-fwd') && ($('#nav-fwd').onclick = navFwd);
+  document.querySelectorAll('[data-navi]').forEach(a => a.onclick = e => { e.preventDefault(); navGo(+a.dataset.navi); });
+}
+function refreshNavBar(){ const nb = $('#navbar'); if(nb){ nb.outerHTML = navBar(); bindNav(); } }
+document.addEventListener('keydown', e => {
+  if(e.target.closest?.('input,textarea,select')) return;
+  if((e.altKey && e.key === 'ArrowLeft') || e.key === 'Backspace'){ e.preventDefault(); navBack(); }
+  else if(e.altKey && e.key === 'ArrowRight'){ e.preventDefault(); navFwd(); }
+});
+// the browser's own Back button also steps back through stock screens instead of leaving the app
+window.addEventListener('popstate', e => {
+  if(e.state?.app !== 'base') return;
+  if(navPrev()){ navBack(); history.pushState({app: 'top'}, '', location.href); }
+  else history.back();
+});
+// typing #model or #TICKER into the address bar on an open page
+window.addEventListener('hashchange', () => {
+  const h = decodeURIComponent(location.hash.slice(1));
+  if(h === 'model'){ S.view = 'model'; leaveEntry(); showModel(); }
+  else if(h && h !== cur?.id) openCompany(h);
+});
+function setHash(id){ history.replaceState({app: 'top'}, '', id ? '#' + encId(id) : location.pathname + location.search); }
+function shell(active){
+  const current = active || (S.view === 'detail' ? 'list' : 'graph');
+  document.querySelectorAll('.research-menu [data-v]').forEach(button => {
+    const selected = button.dataset.v === current;
+    button.classList.toggle('on', selected);
+    if(selected) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+  document.title = (S.view === 'detail' && cur ? cur.name : {list:'Stock screener', graph:'Dependency map', impact:'Scenarios', news:'News', model:'Model'}[current]) + ' — StockAtlas';
+  return navBar() + `${S.model !== 'ready' ? `<div class="banner" id="mbanner">Models are computing in the background. Prices and company connections remain available.</div>` : ''}`;
+}
+function bindTabs(){
+  bindNav();
+  window.dispatchEvent(new Event('stockatlas:research-render'));
+  document.querySelectorAll('.tab').forEach(t => t.onclick = () => { S.view = t.dataset.v; leaveEntry(); $('#main').scrollTop = 0; setHash(S.view === 'model' ? 'model' : null); refreshView(); });
+}
+function refreshView(){
+  if(S.view === 'graph') return showFlow();
+  if(S.view === 'model') return showModel();
+  if(S.view === 'impact') return showImpact();
+  if(S.view === 'news') return showNews();
+  S.view = 'list'; return loadList();
+}
+
+/* ================= list ================= */
+// sort keys: [label, default direction (-1 = biggest first)]
+const SORTS = {mcap:['Market cap',-1], pe:['P/E (low first)',1], pb:['P/B',1], roe:['ROE',-1], roce:['ROCE',-1],
+  revGrowth:['Sales growth (latest qtr YoY)',-1], epsGrowth:['Profit growth (latest qtr YoY)',-1], salesCagr:['Sales CAGR (3Y)',-1],
+  profitCagr:['Profit CAGR (3Y)',-1], de:['Debt / Equity (low first)',1], divYield:['Dividend yield',-1], opm:['Operating margin',-1],
+  d1:['1D change',-1], m1:['1M change',-1], m6:['6M change',-1], y1:['1Y change',-1], geoScore:['Geo score',-1], price:['Price',-1], name:['Name A–Z',1]};
+const listCache = {};
+async function companies(qs){
+  const hit = listCache[qs];
+  if(hit && Date.now() - hit.t < 5 * 60e3) return hit.d;
+  const d = await j('/api/companies?' + qs); listCache[qs] = {t: Date.now(), d}; return d;
+}
+const exLink = c => c.exch ? `<a class="nse" href="${esc(c.exch.url)}" target="_blank" rel="noopener" title="Open ${esc(c.id)} on the ${c.exch.name} website" onclick="event.stopPropagation()">${c.exch.name} ↗</a>` : '';
+const dmaTag = c => c.price == null || c.dma50 == null ? '' : `<span class="dma hk" data-help="dma" title="Price vs 50-day / 100-day moving average">50D${c.price >= c.dma50 ? '<span class="up">▲</span>' : '<span class="down">▼</span>'} 100D${c.dma100 == null ? '–' : c.price >= c.dma100 ? '<span class="up">▲</span>' : '<span class="down">▼</span>'}</span>`;
+async function loadList(){
+  $('#main').innerHTML = shell('list') + '<div class="loading">Loading…</div>'; bindTabs();
+  S.list = await companies(scopeQS());
+  renderList();
+}
+function matchQ(c, q){
+  if(!q) return true;
+  const n = c.name.toLowerCase(), id = c.id.toLowerCase();
+  return id.startsWith(q) || n.startsWith(q) || n.split(/[\s\-()&]+/).some(w => w.startsWith(q)) || n.includes(q) || id.includes(q);
+}
+function toolbar(){
+  const f = S.f;
+  const geo = [['all','All'],['tailwind','Tailwind'],['mixed','Mixed'],['headwind','Headwind']];
+  const caps = ['all','Large','Mid','Small','Micro','Penny'];
+  return `<div class="toolbar" id="toolbar">
+    <div class="grp"><span class="lab">Sort by</span>
+      <select id="sortsel">${Object.entries(SORTS).map(([k, [l]]) => `<option value="${k}" ${S.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <button class="btn" id="sortdir" style="padding:3px 9px" title="Flip order">${S.dir < 0 ? '↓ High → low' : '↑ Low → high'}</button></div>
+    <div class="grp" id="f-geo"><span class="lab hk" data-help="stance">Geo stance</span>${geo.map(([k,l]) => `<button class="chip ${S.geo===k?'on':''}" data-geo="${k}">${l}</button>`).join('')}</div>
+    <div class="grp" id="f-cap"><span class="lab hk" data-help="size">Size</span>${caps.map(k => `<button class="chip ${S.cap===k?'on':''}" data-cap="${k}">${k==='all'?'All':k}</button>`).join('')}</div>
+    <div class="grp" id="f-ratio"><span class="lab">Ratios</span>
+      P/E ≤ <input class="ninput" data-f="peMax" type="number" value="${esc(f.peMax)}" placeholder="any">
+      ROE ≥ <input class="ninput" data-f="roeMin" type="number" value="${esc(f.roeMin)}" placeholder="%">
+      Sales gr. ≥ <input class="ninput" data-f="sgMin" type="number" value="${esc(f.sgMin)}" placeholder="%">
+      D/E ≤ <input class="ninput" data-f="deMax" type="number" value="${esc(f.deMax)}" placeholder="×">
+      <button class="btn" id="fclear" style="padding:3px 9px">Clear</button></div>
+  </div>`;
+}
+function bindToolbar(){
+  $('#sortsel').onchange = e => { S.sort = e.target.value; S.dir = SORTS[S.sort][1]; renderList(); };
+  $('#sortdir').onclick = () => { S.dir = -S.dir; renderList(); };
+  document.querySelectorAll('[data-geo]').forEach(b => b.onclick = () => { S.geo = b.dataset.geo; renderList(); });
+  document.querySelectorAll('[data-cap]').forEach(b => b.onclick = () => { S.cap = b.dataset.cap; renderList(); });
+  document.querySelectorAll('[data-f]').forEach(inp => inp.onchange = () => { S.f[inp.dataset.f] = inp.value; renderList(); });
+  $('#fclear').onclick = () => { S.f = {peMax:'', roeMin:'', sgMin:'', deMax:''}; S.geo = 'all'; S.cap = 'all'; renderList(); };
+}
+function renderList(){
+  if(S.view !== 'list') return;
+  const q = S.q.trim().toLowerCase();
+  const src = q && S.all ? S.all : S.list;                 // search always covers every company
+  const f = S.f, nv = v => v === '' || v == null ? null : +v;
+  const peMax = nv(f.peMax), roeMin = nv(f.roeMin), sgMin = nv(f.sgMin), deMax = nv(f.deMax);
+  let rows = src.filter(c =>
+    (S.geo === 'all' || c.stance === S.geo) && (S.cap === 'all' || c.cap === S.cap) && matchQ(c, q) &&
+    (peMax == null || (c.pe != null && c.pe > 0 && c.pe <= peMax)) &&
+    (roeMin == null || (c.roe != null && c.roe * 100 >= roeMin)) &&
+    (sgMin == null || (c.revGrowth != null && c.revGrowth * 100 >= sgMin)) &&
+    (deMax == null || (c.de != null && c.de / 100 <= deMax)));
+  const k = S.sort;
+  rows.sort((a,b) => {
+    if(k === 'name') return S.dir * a.name.localeCompare(b.name);
+    let x = a[k], y = b[k];
+    if(k === 'pe'){ if(x != null && x <= 0) x = null; if(y != null && y <= 0) y = null; }   // loss-makers have no meaningful P/E
+    if(x == null && y == null) return (b.mcap || 0) - (a.mcap || 0); if(x == null) return 1; if(y == null) return -1; return S.dir * (x - y);
+  });
+  const up = rows.filter(r => (r.y1 ?? 0) > 0).length;
+  const arrow = c => S.sort === c ? (S.dir < 0 ? ' ▾' : ' ▴') : '';
+  const pr = v => v == null ? '–' : (v * 100).toFixed(1) + '%';
+  const prc = v => v == null ? '–' : `<span class="${cls(v)}">${(v > 0 ? '+' : '') + (v * 100).toFixed(1)}%</span>`;
+  const title = q ? `Search: “${esc(S.q.trim())}” (all sectors)` : esc(scopeLabel());
+  const focused = document.activeElement?.dataset?.f;
+  $('#main').innerHTML = shell('list') + toolbar() + `
+    <div class="hdr">${S.seg || S.sector || q ? `<h2>${title}</h2>` : ''}
+      <span class="sub">${rows.length} stocks · ${up} up / ${rows.length-up} down over 1Y · hover = financials · click = full analysis · NSE ↗ = official quote page</span></div>
+    <div class="market-table" role="region" aria-label="Company financial comparison, scroll for more columns" tabindex="0"><table><thead><tr>
+      <th data-s="name">Company${arrow('name')}</th>
+      <th data-s="price" data-help="Price">Price${arrow('price')}</th>
+      <th data-s="d1" data-help="1D">1D${arrow('d1')}</th>
+      <th data-s="m1" class="hide-sm" data-help="1M">1M${arrow('m1')}</th>
+      <th data-s="y1" data-help="1Y">1Y${arrow('y1')}</th>
+      <th data-s="mcap" data-help="Market cap">Mkt cap${arrow('mcap')}</th>
+      <th data-s="pe" data-help="P/E (TTM)">P/E${arrow('pe')}</th>
+      <th data-s="roe" class="hide-sm" data-help="ROE">ROE${arrow('roe')}</th>
+      <th data-s="roce" class="hide-sm" data-help="ROCE">ROCE${arrow('roce')}</th>
+      <th data-s="revGrowth" class="hide-sm" data-help="Rev. growth">Sales gr.${arrow('revGrowth')}</th>
+      <th data-s="profitCagr" class="hide-sm" data-help="Profit CAGR">Profit 3Y${arrow('profitCagr')}</th>
+      <th data-s="geoScore" data-help="Geo score">Geo${arrow('geoScore')}</th>
+      <th class="hide-sm" style="cursor:default">1Y trend</th>
+    </tr></thead><tbody>
+    ${rows.slice(0, 600).map(c => `<tr class="click ${S.sel===c.id?'sel':''}" data-cid="${esc(c.id)}">
+      <td><button class="research-save compact" data-research-save="${esc(c.id)}" data-company-name="${esc(c.name)}" aria-label="Save ${esc(c.name)}" aria-pressed="false">☆</button> <span class="nm">${esc(c.name)}</span><span class="tk">${esc(c.id)}</span>${exLink(c)}<br>
+        ${stanceBadge(c.stance)} ${c.cap ? `<span class="badge b-cap b-${c.cap}">${c.cap}</span>` : ''} ${dmaTag(c)}
+        ${!S.seg || q ? `<span class="tk">${esc(c.segName)}</span>` : ''}</td>
+      <td>${inr(c.price)}</td>
+      <td class="${cls(c.d1)}">${pct(c.d1)}</td>
+      <td class="${cls(c.m1)} hide-sm">${pct(c.m1)}</td>
+      <td class="${cls(c.y1)}"><b>${pct(c.y1)}</b></td>
+      <td>${cr(c.mcap)}</td>
+      <td>${c.pe == null || c.pe <= 0 ? '–' : num(c.pe)}</td>
+      <td class="hide-sm">${pr(c.roe)}</td>
+      <td class="hide-sm">${pr(c.roce)}</td>
+      <td class="hide-sm">${prc(c.revGrowth)}</td>
+      <td class="hide-sm">${prc(c.profitCagr)}</td>
+      <td class="${cls(c.geoScore)}">${c.geoScore == null ? '–' : (c.geoScore > 0 ? '+' : '') + c.geoScore.toFixed(2)}</td>
+      <td class="hide-sm">${spark(c.spark, 80, 24)}</td>
+    </tr>`).join('') || '<tr><td colspan="13" class="empty">No stocks match these filters.</td></tr>'}
+    </tbody></table></div>`;
+  bindTabs(); bindToolbar();
+  if(focused) document.querySelector(`[data-f="${focused}"]`)?.focus();
+  document.querySelectorAll('th[data-s]').forEach(th => th.onclick = () => {
+    const s = th.dataset.s; S.dir = S.sort === s ? -S.dir : SORTS[s][1]; S.sort = s; renderList(); });
+  document.querySelectorAll('tbody tr[data-cid]').forEach(tr => {
+    tr.onclick = () => openCompany(tr.dataset.cid);
+  });
+}
+
+/* ================= dependency flow map =================
+   left  = what the company relies on (incoming: suppliers, service providers, owners, partners)
+   centre = the company
+   right = who relies on it (outgoing: customers, subsidiaries, investees)
+   bottom = similar companies.  Click any card to re-centre on it. */
+const flowState = {};   // per-container: {trail:[ids], ro:ResizeObserver}
+
+function flowCard(o, dir, edge){
+  const isC = o.kind === 'company';
+  const ev = edge?.evidence;
+  return `<div class="fcard f-${dir}" data-go="${esc(o.id)}" ${isC ? `data-cid="${esc(o.id)}"` : ''}
+      data-edge="${edge ? esc(edge.type) : ''}">
+    <div class="fn">${esc(o.name)}${isC ? `<span class="tk">${esc(o.id)}</span>` : ''}</div>
+    <div class="fm">${isC ? `${stanceBadge(o.stance)} <span>${inr(o.price)}</span> <span class="${cls(o.y1)}">${pct(o.y1)} 1Y</span> ${dmaTag(o)}`
+                          : `<span class="badge b-cap">${esc(o.category)}</span> <span class="sub">outside entity</span>`}
+      ${edge ? `<span class="badge b-cap ftype">${esc(edge.typeLabel)}</span>` : ''}
+      ${o.rcorr != null ? `<span class="sub hk" data-help="resid ρ">resid ρ ${num(o.rcorr,2)}</span>` : ''}</div>
+    ${ev ? `<div class="ev hk" data-help="granger">resid ρ ${num(ev.resid_corr,2)} · Granger q ${num(ev.granger_q,3)}<span class="sig">${pstars(ev.granger_q)}</span></div>` : ''}
+  </div>`;
+}
+
+const FLOW_LIMIT = 10;   // cards per column before "+N more"
+async function renderFlow(el, id){
+  const st = flowState[el.id] || (flowState[el.id] = {});
+  if(st.id !== id){ st.id = id; st.showAll = false; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  const d = await j('/api/node/' + encId(id));
+  const ins = d.rows.filter(r => r.dir === 'in'), outs = d.rows.filter(r => r.dir === 'out');
+  const n = d.node, isC = n.kind === 'company';
+  if(!isC) ENTNAME[n.id] = n.name;
+  const cut = arr => st.showAll ? arr : arr.slice(0, FLOW_LIMIT);
+  const insV = cut(ins), outsV = cut(outs), hidden = ins.length - insV.length + outs.length - outsV.length;
+  el.innerHTML = `
+    <div class="zbar">
+      <span class="sub">Zoom</span>
+      <button class="btn" data-z="-">−</button><button class="btn" data-z="+">+</button>
+      <button class="btn" data-z="fit" title="Shrink so the whole map fits on one screen">Fit screen</button>
+      <button class="btn" data-z="1">100%</button>
+      <span class="sub" data-zlabel></span>
+      ${hidden || st.showAll ? `<button class="btn expand-connections" data-more aria-expanded="${st.showAll}">${st.showAll ? 'Show fewer connections' : `Show ${hidden} more ${hidden === 1 ? 'connection' : 'connections'}`}</button>` : ''}
+      <span class="sub" style="margin-left:auto">${el.id === 'egoflow' ? 'click a company card to open it (◀ Back returns)' : 'click a card to re-centre (◀ Back undoes)'} · hover for financials</span>
+    </div>
+    <div class="zwrap"><div class="zin">
+    <div class="flow">
+      <div class="fcol"><div class="fhead" style="color:var(--in)" data-help="leg:in">← Relies on (${ins.length})</div>
+        ${insV.map(r => flowCard(r.other, 'in', r.edge)).join('') || '<div class="empty">No inputs mapped in this dataset yet. This is a data gap, not evidence the company is self-sufficient.</div>'}</div>
+      <div class="fgap"></div>
+      <div class="fcol fmidcol"><div class="fcard fcenter" id="${el.id}-center" ${isC ? `data-cid="${esc(n.id)}"` : ''}
+        ${isC && !(S.view === 'detail' && cur?.id === n.id) ? `data-full="${esc(n.id)}" title="Open full analysis" style="cursor:pointer"` : ''}>
+        <div class="fn" style="font-size:15px">${esc(n.name)}</div>
+        <div class="sub">${isC ? `${esc(n.id)} · ${esc(n.segName)}` : esc(n.category) + ' · outside entity'}</div>
+        ${isC ? `<div class="fm">${stanceBadge(n.stance, n.geoScore)} <span>${inr(n.price)}</span> <span class="${cls(n.y1)}">${pct(n.y1)} 1Y</span> ${dmaTag(n)}</div>` : ''}
+      </div></div>
+      <div class="fgap"></div>
+      <div class="fcol"><div class="fhead" style="color:var(--out)" data-help="leg:out">Relied on by → (${outs.length})</div>
+        ${outsV.map(r => flowCard(r.other, 'out', r.edge)).join('') || '<div class="empty">No customers mapped in this dataset yet.</div>'}</div>
+      <svg class="fsvg"></svg>
+    </div>
+    ${isC ? `<div class="fhead" style="color:var(--peer);margin-top:14px" data-help="leg:peer">≈ Similar companies (${d.peers.length})</div>
+      <div class="fpeers">${d.peers.map(p => flowCard(p, 'peer')).join('') || '<div class="empty">–</div>'}</div>` : ''}
+    </div></div>`;
+
+  const flow = el.querySelector('.flow'), wrap = el.querySelector('.zwrap');
+  el._edges = {ins: insV, outs: outsV};
+  const draw = () => drawFlowArrows(flow, el.id, +(el.dataset.scale || 1));
+  st.ro?.disconnect(); st.wro?.disconnect();
+  st.ro = new ResizeObserver(draw); st.ro.observe(flow);
+  st.wro = new ResizeObserver(() => applyZoom(el)); st.wro.observe(wrap);
+  applyZoom(el);
+
+  el.querySelectorAll('[data-z]').forEach(b => b.onclick = () => {
+    const z = b.dataset.z, curS = +(el.dataset.scale || 1);
+    PREF.zoom = z === 'fit' ? null : z === '1' ? 1 : Math.max(0.3, Math.min(1.6, +(curS + (z === '+' ? 0.1 : -0.1)).toFixed(2)));
+    savePref(); applyZoom(el);
+  });
+  el.querySelector('[data-more]')?.addEventListener('click', () => { st.showAll = !st.showAll; renderFlow(el, id); });
+  el.querySelectorAll('[data-go]').forEach(c => c.onclick = () => openNode(c.dataset.go, c.hasAttribute('data-cid')));
+  el.querySelectorAll('[data-full]').forEach(b => b.onclick = ev => { ev.stopPropagation(); openCompany(b.dataset.full); });
+}
+
+/* zoom = CSS scale on the inner box; the inner box is widened by 1/scale so the map always fills the width */
+function applyZoom(el){
+  const wrap = el.querySelector('.zwrap'), zin = el.querySelector('.zin'); if(!wrap || !zin) return;
+  const W = wrap.clientWidth; if(!W) return;
+  const set = sc => { zin.style.width = (W / sc) + 'px'; zin.style.transform = `scale(${sc})`; };
+  let sc = PREF.zoom;
+  // A stacked map should scroll vertically instead of shrinking its labels.
+  if(sc == null && window.matchMedia('(max-width:1100px)').matches) sc = 1;
+  if(sc == null){                                  // fit: shrink until the map's height fits the window
+    const H = Math.max(380, innerHeight - 150);
+    sc = 1;
+    for(let k = 0; k < 4; k++){ set(sc); const h = zin.offsetHeight; if(h * sc <= H) break; sc = Math.max(0.45, Math.min(1, H / h)); }
+  }
+  set(sc);
+  el.dataset.scale = sc;
+  wrap.style.height = Math.ceil(zin.offsetHeight * sc) + 'px';
+  const lab = el.querySelector('[data-zlabel]'); if(lab) lab.textContent = Math.round(sc * 100) + '%' + (PREF.zoom == null ? ' (fit)' : '');
+  drawFlowArrows(el.querySelector('.flow'), el.id, sc);
+}
+
+function drawFlowArrows(flow, elId, sc=1){
+  if(!flow) return;
+  const svg = flow.querySelector('.fsvg'), host = flow.closest('[id]');
+  const center = flow.querySelector('.fcenter');
+  if(!svg || !center) return;
+  flow.querySelectorAll('.fpill').forEach(x => x.remove());
+  const fr = flow.getBoundingClientRect(), cr_ = center.getBoundingClientRect();
+  const FW = fr.width / sc, FH = fr.height / sc;   // local (unscaled) coordinates
+  svg.setAttribute('width', FW); svg.setAttribute('height', FH);
+  const css = getComputedStyle(document.documentElement);
+  const col = {in: css.getPropertyValue('--in').trim(), out: css.getPropertyValue('--out').trim()};
+  const dash = t => t === 'invest' ? '6 4' : t === 'partner' ? '2 4' : '';
+  const {ins = [], outs = []} = host._edges || {};
+  let paths = `<defs>${['in','out'].map(k => `<marker id="ah-${elId}-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${col[k]}"/></marker>`).join('')}</defs>`;
+  const cards = (dir) => [...flow.querySelectorAll('.fcard.f-' + dir)];
+  const cTop = (cr_.top - fr.top) / sc, cH = cr_.height / sc, cL = (cr_.left - fr.left) / sc, cR = (cr_.right - fr.left) / sc;
+  const place = (dir, list, edges) => list.forEach((card, i) => {
+    const r = card.getBoundingClientRect(), e = edges[i]; if(!e) return;
+    const y = (r.top - fr.top + r.height / 2) / sc;
+    const ty = cTop + cH * (list.length === 1 ? 0.5 : 0.15 + 0.7 * i / (list.length - 1));
+    let x1, x2, y1, y2;
+    if(dir === 'in'){ x1 = (r.right - fr.left) / sc; y1 = y; x2 = cL; y2 = ty; }
+    else { x1 = cR; y1 = ty; x2 = (r.left - fr.left) / sc; y2 = y; }
+    const mx = (x1 + x2) / 2;
+    paths += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}" fill="none" stroke="${col[dir]}" stroke-width="1.8"
+      stroke-dasharray="${dash(e.type)}" opacity="0.85" marker-end="url(#ah-${elId}-${dir})"/>`;
+    // label pill sits in the gap beside the outer card, so pills never collide
+    const pill = document.createElement('div');
+    pill.className = 'fpill p-' + dir;
+    pill.textContent = e.label;
+    pill.title = `${e.typeLabel}: ${e.label}`;
+    pill.style.top = (y - 10) + 'px';
+    if(dir === 'in') pill.style.left = (x1 + 6) + 'px'; else pill.style.right = (FW - x2 + 6) + 'px';
+    flow.appendChild(pill);
+  });
+  place('in', cards('in'), ins.map(r => r.edge));
+  place('out', cards('out'), outs.map(r => r.edge));
+  svg.innerHTML = paths;
+}
+
+async function showFlow(startId, push=true){
+  S.view = 'graph';
+  setHash(null);
+  $('#main').innerHTML = shell('graph') + `
+    <div class="hdr">
+      <input id="flowq" list="flowlist" placeholder="Pick a company…" style="padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--text);min-width:260px">
+      <datalist id="flowlist"></datalist>
+      <span class="sub">${esc(scopeLabel())}</span></div>
+    <div class="legendbar">
+      <span data-help="leg:in"><i class="sw" style="border-color:var(--in)"></i>receives from (left)</span>
+      <span data-help="leg:out"><i class="sw" style="border-color:var(--out)"></i>provides to (right)</span>
+      <span data-help="leg:peer"><i class="sw" style="border-color:var(--peer)"></i>similar (bottom)</span>
+      <span><i class="sw" style="border-top-style:solid"></i>goods / services</span>
+      <span><i class="sw" style="border-top-style:dashed"></i>owner / investor</span>
+      <span><i class="sw" style="border-top-style:dotted"></i>partner / JV</span>
+    </div>
+    <div id="flowmain" class="card" style="padding:12px 14px"></div>`;
+  bindTabs();
+  const list = [...await companies(scopeQS())];
+  list.sort((a, b) => (b.mcap || 0) - (a.mcap || 0));
+  $('#flowlist').innerHTML = list.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+  $('#flowq').onchange = e => { const v = e.target.value.trim().toUpperCase(); const hit = list.find(c => c.id.toUpperCase() === v || c.name.toUpperCase() === v); if(hit) openNode(hit.id, false, true); };
+  const start = startId || S.sel || list[0]?.id;
+  if(start){ if(push) navPush('map', start); else NAV.onEntry = true; S.sel = start; refreshNavBar(); renderFlow($('#flowmain'), start); showPanel(start); }
+}
+
+/* one entry point for "user clicked a company / entity somewhere":
+   on a stock screen a company opens its own screen; in the map tab it re-centres the map.
+   Both are recorded so ◀ Back undoes them. */
+function openNode(id, isCompany, forceMap=false){
+  if(S.view === 'detail' && isCompany && !forceMap) return openCompany(id);
+  if(S.view === 'detail'){                       // outside entity: re-centre this stock's map in place, recorded for ◀ Back
+    navPush('ego', id, {stock: cur?.id}); S.sel = id; refreshNavBar(); renderFlow($('#egoflow'), id); showPanel(id); return; }
+  if(S.view === 'graph' || forceMap){ navPush('map', id); S.sel = id; refreshNavBar(); renderFlow($('#flowmain'), id); showPanel(id); return; }
+  if(isCompany) return openCompany(id);
+  showPanel(id);
+}
+
+/* ================= right panel ================= */
+async function showPanel(id){
+  const p = $('#panel');
+  p.innerHTML = '<div class="loading">Loading…</div>';
+  const d = await j('/api/node/' + encId(id));
+  const n = d.node, isC = n.kind === 'company';
+  const ins = d.rows.filter(r => r.dir === 'in'), outs = d.rows.filter(r => r.dir === 'out');
+  const ev = e => {
+    const x = e.evidence; if(!x) return '';
+    return `<div class="ev hk" data-help="granger">resid ρ ${num(x.resid_corr,2)} · Granger p ${num(x.granger_p,3)} · FDR q ${num(x.granger_q,3)}<span class="sig">${pstars(x.granger_q)}</span></div>`;
+  };
+  const other = o => `<span class="nm">${esc(o.kind === 'company' ? o.name : o.name)}</span>${o.kind === 'company' ? `<span class="tk">${esc(o.id)}</span>` : `<span class="tk">${esc(o.category)}</span>`}`;
+  const row = (r, dir) => `<tr class="click" data-node="${esc(r.other.id)}" data-kind="${r.other.kind}">
+      <td class="dir-${dir}">${dir === 'in' ? '←' : '→'}</td>
+      <td>${other(r.other)}</td>
+      <td><span class="badge b-cap">${esc(r.edge.typeLabel)}</span><div>${esc(r.edge.label)}</div>${ev(r.edge)}</td></tr>`;
+  const g = d.geo;
+  p.innerHTML = `
+    <div class="hdr" style="margin-bottom:2px"><h2 style="font-size:17px">${esc(n.name)}</h2></div>
+    <div class="sub" style="margin-bottom:8px">${isC ? `${esc(n.id)} · ${esc(n.sector)} › ${esc(n.segName)}` : 'Outside entity · ' + esc(n.category)}</div>
+    ${isC ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+      ${stanceBadge(n.stance, n.geoScore)} <span>${inr(n.price)}</span> <span class="${cls(n.y1)}">${pct(n.y1)} 1Y</span>
+</div>` : ''}
+    <div class="sect-title" style="color:var(--in)">← Incoming: receives from (${ins.length})</div>
+    <table class="ptable"><tbody>${ins.map(r => row(r, 'in')).join('') || '<tr><td class="empty" colspan="3">Not mapped yet (data gap, not self-sufficiency)</td></tr>'}</tbody></table>
+    <div class="sect-title" style="color:var(--out)">→ Outgoing: provides to (${outs.length})</div>
+    <table class="ptable"><tbody>${outs.map(r => row(r, 'out')).join('') || '<tr><td class="empty" colspan="3">Not mapped yet</td></tr>'}</tbody></table>
+    ${isC ? `<div class="sect-title" style="color:var(--peer)">≈ Similar companies (${d.peers.length})</div>
+    <table class="ptable"><thead><tr><th>Company</th><th data-help="1Y">1Y</th><th data-help="resid ρ">resid ρ</th></tr></thead><tbody>
+      ${d.peers.map(x => `<tr class="click" data-node="${esc(x.id)}" data-kind="company"><td>${other(x)}</td><td class="${cls(x.y1)}">${pct(x.y1)}</td><td>${num(x.rcorr,2)}</td></tr>`).join('') || '<tr><td class="empty" colspan="3">–</td></tr>'}
+    </tbody></table>` : ''}
+    ${g ? `<div class="sect-title">Geopolitical model</div>
+      <table class="ptable"><tbody>
+        <tr data-help="g:scar"><td class="hk">Event-study mean SCAR (shocks)</td><td>${num(g.shock_scar,2)}</td></tr>
+        <tr data-help="g:stress"><td class="hk">Stress-test excess vs Nifty</td><td class="${cls(g.stress_excess)}">${pctR(g.stress_excess,2)}</td></tr>
+        <tr data-help="g:network"><td class="hk">Direct score → network score</td><td>${num(g.direct,2)} → <b>${num(g.network,2)}</b></td></tr>
+      </tbody></table>` : ''}
+    <div class="disc">Evidence: resid ρ = correlation of the two stocks' factor-model residuals; Granger p = lead-lag test that the provider's residual returns help predict the receiver's (best of lags 1–3); q = Benjamini-Hochberg FDR-adjusted across all edges. Stars use q: * &lt;.1 ** &lt;.05 *** &lt;.01.</div>`;
+  p.querySelectorAll('[data-node]').forEach(el => el.onclick = () => openNode(el.dataset.node, el.dataset.kind === 'company'));
+}
+
+/* ================= company detail ================= */
+let priceChart = null, cmpChart = null, finChart = null, cur = null, curInf = null;
+// every block of the stock screen; users can hide / reorder them (⚙ Customize), saved in localStorage
+const SECTIONS = [
+  ['map', 'Dependency map', false], ['keynums', 'Key numbers', false], ['chart', 'Price chart (50 / 100-day averages)', false],
+  ['fin', 'Financials & growth', false], ['news', 'Latest news', true], ['geo', 'Geopolitical model', true],
+  ['macro', 'Macro sensitivity (crude, $…)', true], ['events', 'Event study', true], ['stress', 'Stress tests', true],
+  ['risk', 'Risk model', true], ['similar', 'Statistically similar', true], ['compare', 'Relative performance', true],
+];
+const secOrder = () => { const known = SECTIONS.map(x => x[0]); const o = (PREF.sections || []).filter(k => known.includes(k)); return [...o, ...known.filter(k => !o.includes(k))]; };
+const secHidden = k => (PREF.hidden || []).includes(k);
+// key-number catalogue: id -> [label, value fn]; PREF.stats = chosen ids in order
+const STAT_DEFAULT = ['price','d1','m1','m6','y1','r52','dma50','dma100','mcap','rev','pe','fpe','pb','roe','roce','npm','opm','revg','epsg','scagr','pcagr','de','div','prom','inst','analyst','target'];
+function statCatalog(c, inf, m){
+  return {
+    price:['Price', inr(c.price)], d1:['1D', `<span class="${cls(c.d1)}">${pct(c.d1)}</span>`],
+    m1:['1M', `<span class="${cls(c.m1)}">${pct(c.m1)}</span>`], m6:['6M', `<span class="${cls(c.m6)}">${pct(c.m6)}</span>`],
+    y1:['1Y', `<span class="${cls(c.y1)}">${pct(c.y1)}</span>`], r52:['52W range', `${inr(m.lo52)} – ${inr(m.hi52)}`],
+    dma50:['50-day avg', m.dma50 == null ? '–' : `${inr(m.dma50)} ${c.price >= m.dma50 ? '<span class="up">▲</span>' : '<span class="down">▼</span>'}`],
+    dma100:['100-day avg', m.dma100 == null ? '–' : `${inr(m.dma100)} ${c.price >= m.dma100 ? '<span class="up">▲</span>' : '<span class="down">▼</span>'}`],
+    mcap:['Market cap', cr(inf.marketCap)], rev:['Revenue (TTM)', cr(inf.totalRevenue)],
+    pe:['P/E (TTM)', num(inf.trailingPE)], fpe:['Fwd P/E', num(inf.forwardPE)], pb:['P/B', num(inf.priceToBook)],
+    roe:['ROE', pctRatio(inf.returnOnEquity)], roce:['ROCE', pctRatio(inf.roce)], npm:['Net margin', pctRatio(inf.profitMargins)],
+    opm:['Op. margin', pctRatio(inf.operatingMargins)], revg:['Rev. growth', pctRatio(inf.revenueGrowth)],
+    epsg:['EPS growth', pctRatio(inf.earningsGrowth)],
+    scagr:['Sales CAGR', inf.salesCagr == null ? '–' : `${pctRatio(inf.salesCagr)} <span class="sub">${inf.salesCagrYears}Y</span>`],
+    pcagr:['Profit CAGR', inf.profitCagr == null ? '–' : `${pctRatio(inf.profitCagr)} <span class="sub">${inf.profitCagrYears}Y</span>`],
+    de:['Debt / Equity', num(inf.debtToEquity)],
+    div:['Div. yield', inf.dividendYield == null ? '–' : num(inf.dividendYield, 2) + '%'],
+    cash:['Cash', cr(inf.totalCash)], debt:['Total debt', cr(inf.totalDebt)], beta:['Beta (Yahoo)', num(inf.beta, 2)],
+    emp:['Employees', inf.fullTimeEmployees == null ? '–' : inf.fullTimeEmployees.toLocaleString('en-IN')],
+    prom:['Promoter/insider', pctRatio(inf.heldPercentInsiders)], inst:['Institutions', pctRatio(inf.heldPercentInstitutions)],
+    analyst:['Analyst view', inf.recommendationKey ? `${esc(inf.recommendationKey)} (${inf.numberOfAnalystOpinions ?? '?'})` : '–'],
+    target:['Analyst target', inr(inf.targetMeanPrice)],
+  };
+}
+function keyNumbersHTML(editing){
+  const cat = statCatalog(cur, curInf, curInf.metrics || {});
+  const chosen = (PREF.stats || STAT_DEFAULT).filter(k => cat[k]);
+  const ids = editing ? [...chosen, ...Object.keys(cat).filter(k => !chosen.includes(k))] : chosen;
+  return `<div class="stats">${ids.map(k => { const [l, v] = cat[k];
+    return `<div class="stat ${editing ? 'pick' + (chosen.includes(k) ? ' on' : '') : ''}" data-stat="${k}" data-help="${esc(l)}"><div class="k">${l}</div><div class="v">${v}</div></div>`; }).join('')}</div>
+    ${editing ? '<div class="sub" style="margin-top:8px">Click numbers to show / hide them. Hidden ones are faded. Click <b>Done</b> to save.</div>' : ''}`;
+}
+function bindKeyNumbers(editing){
+  const box = $('#keynums'); if(!box) return;
+  box.innerHTML = keyNumbersHTML(editing);
+  const btn = $('#kn-edit'); if(btn) btn.textContent = editing ? '✓ Done' : '✎ Edit';
+  if(btn) btn.onclick = () => bindKeyNumbers(!editing);
+  if(editing) box.querySelectorAll('[data-stat]').forEach(el => el.onclick = () => {
+    const chosen = (PREF.stats || STAT_DEFAULT).slice(), k = el.dataset.stat, i = chosen.indexOf(k);
+    i >= 0 ? chosen.splice(i, 1) : chosen.push(k);
+    PREF.stats = chosen; savePref(); el.classList.toggle('on');
+  });
+}
+
+function customizeHTML(){
+  const order = secOrder();
+  return `<div class="custom" id="custom"><div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><b>Customize this screen</b>
+      <span class="sub">tick = show · ↑ ↓ = move · applies to every stock</span><span style="flex:1"></span>
+      <button class="btn" id="cu-reset">Reset to default</button><button class="btn" id="cu-close">Close</button></div>
+    ${order.map((k, i) => { const t = SECTIONS.find(x => x[0] === k)[1];
+      return `<div class="it"><input type="checkbox" data-cu="${k}" ${secHidden(k) ? '' : 'checked'}><span style="flex:1">${esc(t)}</span>
+        <button class="btn" data-up="${i}" ${i ? '' : 'disabled'}>↑</button><button class="btn" data-dn="${i}" ${i < order.length - 1 ? '' : 'disabled'}>↓</button></div>`; }).join('')}
+    <div class="it"><input type="checkbox" id="cu-allf" ${PREF.allFactors ? 'checked' : ''}><span style="flex:1">Macro card: show all 8 factors (default shows only crude, rupee, gold, market)</span></div>
+  </div>`;
+}
+
+async function openCompany(cid, push=true){
+  hideTip();
+  if(push){ navPushOrigin(); navPush('detail', cid); } else NAV.onEntry = true;
+  S.view = 'detail'; S.sel = cid;
+  setHash(cid);
+  $('#main').innerHTML = shell('') + '<div class="loading">Loading…</div>'; bindTabs();
+  const [c, inf] = await Promise.all([j('/api/company/' + encId(cid)), getInfo(cid)]);
+  cur = c; curInf = inf;
+  if(PREF.right) showPanel(cid);
+  const MD = await modelMeta();
+  renderCompany(c, inf, MD);
+}
+
+function renderCompany(c, inf, MD, keepScroll){
+  const m = inf.metrics || {}, r = c.risk || {}, f = c.factor, g = c.geo;
+  const top = $('#main').scrollTop;
+  const riskStats = [
+    ['Realised vol (ann.)', pctRatio(r.vol)], ['GARCH(1,1) fcst vol', pctRatio(r.garch_vol)], ['GARCH persistence α+β', num(r.garch_persist,3)],
+    ['Beta vs Nifty', num(r.beta,2)], ["Jensen's α (ann.)", pctR(r.jensen_alpha)], ['Sharpe', num(r.sharpe,2)], ['Sortino', num(r.sortino,2)],
+    ['Max drawdown (2Y)', pctR(r.max_dd)], ['1-day VaR 95%', pctRatio(r.var95)], ['1-day CVaR 95%', pctRatio(r.cvar95)],
+    ['Momentum 12-1', pctR(r.mom_12_1)], ['6M trend (ann.)', `${pctR(r.trend_slope_ann)} <span class="sub">R² ${num(r.trend_r2,2)}</span>`],
+    ['vs 50 / 200 DMA', r.above_50dma == null ? '–' : `${r.above_50dma ? '▲' : '▼'} / ${r.above_200dma ? '▲' : '▼'}`],
+  ];
+  const KEYF = ['BRENT', 'USDINR', 'GOLD', 'MKT'];
+  const fKeys = f ? (PREF.allFactors ? Object.keys(f.betas) : KEYF.filter(k => k in f.betas)) : [];
+  const plainF = (k, b, t) => {
+    if(b == null) return '–';
+    const sh = {MKT:['Nifty +1%', 1], USDINR:['Rupee weakens 1%', 1], BRENT:['Crude oil +10%', 10], SPX:['S&P 500 −2%', -2], UST10:['US 10Y +0.10pp', 10],
+      GOLD:['Gold +5%', 5], HSI:['Hang Seng −3%', -3], VIX:['Fear (VIX) +10%', 10]}[k];
+    const mv = b * sh[1], weak = Math.abs(t || 0) < 1.65;
+    return `<span class="${weak ? 'flat' : cls(mv)}">${mv > 0 ? '+' : ''}${mv.toFixed(2)}%</span>${weak ? ' <span class="sub">(no clear link)</span>' : ''}`;
+  };
+  const fRows = fKeys.map(k => {
+    const b = f.betas[k], t = f.tstats[k], w = Math.min(60, Math.abs(t || 0) * 12);
+    const sh = {MKT:'Nifty +1%', USDINR:'Rupee weakens 1%', BRENT:'Crude oil +10%', SPX:'S&P 500 −2%', UST10:'US 10Y yield +0.10pp', GOLD:'Gold +5%', HSI:'Hang Seng −3%', VIX:'Fear (VIX) +10%'}[k];
+    return `<tr data-help="f:${k}" data-extra="${esc(factorExtra(k, b, t))}"><td class="hk" style="text-align:left">${esc(sh)}</td><td>${plainF(k, b, t)}</td>
+      <td class="sub">${num(b,3)} / ${num(t,1)}<span class="sig">${stars(t)}</span></td>
+      <td style="text-align:left"><span class="bar" style="width:${w}px;background:${(b||0) >= 0 ? '#137c66' : '#b24e43'};opacity:${Math.abs(t||0) >= 1.96 ? 0.9 : 0.3}"></span></td></tr>`; }).join('');
+  const evList = MD.events || [];
+  const evRows = evList.map(e => {
+    const x = (c.events || {})[e.id];
+    const ex = x ? `abnormal return of <b>${pctR(x.car,2)}</b> over the window (t ${num(x.t,2)}${Math.abs(x.t||0) >= 1.96 ? ', significant' : ', within normal noise'}) beyond what the Nifty move predicts.` : '';
+    return `<tr data-help="${HELP['ev:' + e.id] ? 'ev:' + e.id : 'CAR'}" data-extra="${esc(ex)}"><td class="hk" style="text-align:left">${esc(e.name)}${e.theme !== 'shock' ? ' <span class="sub">(domestic)</span>' : ''}${e.custom ? ' <span class="badge b-cap">added</span>' : ''}</td>
+      <td class="sub" style="white-space:nowrap">${esc(e.day)}</td>
+      <td class="${cls(x?.car)}">${x ? pctR(x.car, 2) : '–'}</td><td>${x ? num(x.t,2) : '–'}<span class="sig">${stars(x?.t)}</span></td></tr>`; }).join('');
+  const evDone = evList.map(e => [e, (c.events || {})[e.id]]).filter(([, x]) => x && x.car != null);
+  const evBest = evDone.length ? evDone.reduce((a, b) => b[1].car > a[1].car ? b : a) : null;
+  const evWorst = evDone.length ? evDone.reduce((a, b) => b[1].car < a[1].car ? b : a) : null;
+  const scRows = (MD.scenarios || []).map(s => `<tr data-help="sc:${s.id}" data-extra="${esc(c.scenario?.[s.id] == null ? '' : 'expected to ' + (c.scenario[s.id] >= 0 ? 'outperform' : 'underperform') + ' Nifty by about <b>' + pctR(Math.abs(c.scenario[s.id]),2) + '</b> under this scenario (linear factor approximation).')}"><td class="hk" style="text-align:left">${esc(s.name)}</td>
+      <td class="sub" style="text-align:left">${Object.entries(s.shocks).map(([k,v]) => `${k} ${v > 0 ? '+' : ''}${k === 'UST10' ? v + 'pp' : (v*100).toFixed(0) + '%'}`).join(', ')}</td>
+      <td class="${cls(c.scenario?.[s.id])}"><b>${pctR(c.scenario?.[s.id], 2)}</b></td></tr>`).join('');
+  const stanceWord = {tailwind:'has tended to <b class="up">hold up better</b> than most stocks', headwind:'has tended to be <b class="down">hurt more</b> than most stocks', mixed:'has behaved <b>about average</b>'}[c.stance] || 'is still being scored';
+
+  const H = {
+    map: `<div class="card"><h3>Dependency map — relies on (left) → company → relied on by (right)</h3><div id="egoflow"></div></div>`,
+    keynums: `<div class="card"><h3>Key numbers · ${esc(m.asof || '')} <button class="btn edit" id="kn-edit">✎ Edit</button></h3><div id="keynums"></div></div>`,
+    chart: `<div class="card"><h3>Price trend</h3>
+        <div class="periods" id="periods">${['1mo','3mo','6mo','1y','2y','5y','max'].map(p => `<button class="chip ${p===PREF.period?'on':''}" data-p="${p}">${p.toUpperCase()}</button>`).join('')}
+          <span style="width:14px"></span>
+          <button class="chip ${PREF.dma50 ? 'on' : ''}" data-dma="dma50" style="${PREF.dma50 ? 'color:#a36b20;border-color:#a36b20' : ''}">50-day avg</button>
+          <button class="chip ${PREF.dma100 ? 'on' : ''}" data-dma="dma100" style="${PREF.dma100 ? 'color:#8662c3;border-color:#8662c3' : ''}">100-day avg</button></div>
+        <div style="height:280px"><canvas id="pc"></canvas></div>
+        <div class="sub" style="margin-top:4px">Price above its 50/100-day average = short/medium-term uptrend; below = downtrend. 5Y/MAX use weekly bars (10/20-week averages).</div></div>`,
+    fin: `<div class="card"><h3>Financials & growth (annual, consolidated)</h3><div id="finbox"><div class="loading">Loading financials…</div></div></div>`,
+    news: `<div class="card"><h3>Latest news</h3><div id="newsbox"><div class="loading">Loading news…</div></div></div>`,
+    geo: `<div class="card"><h3>Geopolitical model ${stanceBadge(c.stance, c.geoScore)}</h3>
+        ${g ? `<div class="plain-box"><b>In plain words:</b> during real shocks (US tariffs, India–Pakistan tension, sanctions…) and in our what-if tests, ${esc(c.name)} ${stanceWord}.
+          <ul class="plain" style="margin-top:6px">
+            <li>Reaction to shocks: <b class="${cls(g.shock_scar)}">${g.shock_scar == null ? '–' : g.shock_scar > 0.3 ? 'rose vs market' : g.shock_scar < -0.3 ? 'fell vs market' : 'roughly in line'}</b> on average.</li>
+            <li>In stress tests it would do <b class="${cls(g.stress_excess)}">${pctR(g.stress_excess,1)}</b> vs Nifty on average.</li>
+            <li>Its suppliers / customers ${(g.network ?? 0) - (g.direct ?? 0) > 0.05 ? 'make it <b class="up">a bit stronger</b>' : (g.network ?? 0) - (g.direct ?? 0) < -0.05 ? 'make it <b class="down">a bit weaker</b>' : 'do not change the picture much'}.</li>
+          </ul></div>
+          <details class="tech"><summary>Show the numbers behind it</summary><table><tbody>
+            <tr data-help="g:scar"><td class="hk">Mean standardised CAR over ${evList.filter(e => e.theme==='shock').length} shock events</td><td>${num(g.shock_scar,2)}</td></tr>
+            <tr data-help="g:stress"><td class="hk">Mean stress-test excess return vs Nifty</td><td class="${cls(g.stress_excess)}">${pctR(g.stress_excess,2)}</td></tr>
+            <tr data-help="g:z"><td class="hk">z(events) · z(stress)</td><td>${num(g.z_events,2)} · ${num(g.z_stress,2)}</td></tr>
+            <tr data-help="g:direct"><td class="hk">Direct score = ½z(events) + ½z(stress)</td><td>${num(g.direct,2)}</td></tr>
+            <tr data-help="g:network"><td class="hk">Network score (diffused through graph, α=${MD.params?.net_alpha ?? ''})</td><td><b>${num(g.network,2)}</b></td></tr>
+          </tbody></table>
+          <div class="sub" style="margin-top:6px">Tailwind if network score &gt; +0.5σ, headwind if &lt; −0.5σ, otherwise mixed.</div></details>` : '<div class="empty">Model computing…</div>'}
+        ${c.narrative?.length ? `<h3 style="margin-top:14px">Narrative context (curated, not used in score)</h3><ul class="plain">${c.narrative.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      </div>`,
+    macro: `<div class="card"><h3>Macro sensitivity — what usually happens to this stock when…</h3>
+        ${f ? `<table><thead><tr><th>If…</th><th>Stock moves</th><th data-help="β">β / t</th><th></th></tr></thead><tbody>${fRows}</tbody></table>
+        <div class="sub" style="margin-top:6px">Based on ~2 years of daily prices. “No clear link” = not statistically reliable. <a href="#" id="allf">${PREF.allFactors ? 'Show key factors only' : 'Show all 8 factors'}</a></div>` : '<div class="empty">Model computing…</div>'}
+      </div>`,
+    events: `<div class="card"><h3>Event study — how it reacted to news (latest first)</h3>
+        <div class="plain-box">How much the stock moved <b>beyond the market</b> in the days after each event.
+          ${evBest ? `Best: <b class="${cls(evBest[1].car)}">${pctR(evBest[1].car,1)}</b> (${esc(evBest[0].name.split('(')[0])}). Worst: <b class="${cls(evWorst[1].car)}">${pctR(evWorst[1].car,1)}</b> (${esc(evWorst[0].name.split('(')[0])}).` : ''}
+          Stars = unusually large move.</div>
+        <table><thead><tr><th>Event</th><th>Date</th><th data-help="CAR">Move vs market</th><th data-help="tEvent">t</th></tr></thead><tbody>${evRows}</tbody></table></div>`,
+    stress: `<div class="card"><h3>Stress tests — if this happens, vs Nifty</h3>
+        <div class="plain-box">Positive = expected to do <b class="up">better</b> than Nifty, negative = <b class="down">worse</b>. Built from the macro sensitivities above. Try your own scenario on the <a href="#" id="go-impact">Who benefits?</a> tab.</div>
+        <table><thead><tr><th>Scenario</th><th data-help="Shocks">Assumed moves</th><th data-help="Impact">Impact</th></tr></thead><tbody>${scRows}</tbody></table></div>`,
+    risk: `<div class="card"><h3>Risk model</h3>
+        <div class="plain-box">Typical yearly swing <b>${pctRatio(r.vol)}</b>; worst fall in 2 years <b class="down">${pctR(r.max_dd)}</b>; on a bad day (1 in 20) it can lose about <b>${pctRatio(r.var95)}</b>.</div>
+        <div class="stats">${riskStats.map(([k,v]) => `<div class="stat" data-help="${esc(k)}"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('')}</div></div>`,
+    similar: `<div class="card"><h3>Statistically similar (Ledoit-Wolf residual correlation)</h3>
+        <div class="sub" style="margin-bottom:6px">Co-movement left after removing market & macro factors, i.e. shared company-specific drivers.</div>
+        <table><thead><tr><th>Company</th><th data-help="resid ρ">resid ρ</th><th data-help="raw ρ">raw ρ</th><th data-help="1Y">1Y</th></tr></thead><tbody>
+        ${c.similar.map(x => `<tr class="click" data-open="${esc(x.id)}" data-cid="${esc(x.id)}"><td><span class="nm">${esc(x.name)}</span><span class="tk">${esc(x.id)}</span><br><span class="sub">${esc(x.segName)}</span></td>
+          <td><span class="bar" style="width:${Math.max(3, (x.rcorr||0)*90)}px;background:var(--peer)"></span> ${num(x.rcorr,2)}</td><td>${num(x.corr,2)}</td><td class="${cls(x.y1)}">${pct(x.y1)}</td></tr>`).join('') || '<tr><td class="empty">Model computing…</td></tr>'}
+        </tbody></table>
+        ${c.cluster.length ? `<div class="sub" style="margin-top:8px"><span class="hk" data-help="cluster">Same hierarchical cluster</span>: ${c.cluster.map(x => `<a href="#" data-open="${esc(x.id)}">${esc(x.id)}</a>`).join(', ')}</div>` : ''}
+      </div>`,
+    compare: `<div class="card"><h3>Relative performance vs related companies (rebased 100)</h3><div style="height:300px"><canvas id="cc"></canvas></div></div>`,
+  };
+  // lay out: full-width sections alone, consecutive half-width ones side by side
+  let body = '', half = [];
+  const flush = () => { if(half.length) body += half.length > 1 ? `<div class="grid g2">${half.join('')}</div>` : half[0]; half = []; };
+  for(const k of secOrder()){
+    if(secHidden(k)) continue;
+    const isHalf = SECTIONS.find(x => x[0] === k)[2];
+    if(isHalf){ half.push(H[k]); if(half.length === 2) flush(); } else { flush(); body += H[k]; }
+  }
+  flush();
+
+  $('#main').innerHTML = shell('') + `
+    <div class="hdr" style="margin-top:10px"><div class="company-title-line"><h2>${esc(c.name)}</h2><button class="research-save" data-research-save="${esc(c.id)}" data-company-name="${esc(c.name)}" aria-label="Save ${esc(c.name)}" aria-pressed="false">☆</button></div><span class="tk" style="font-size:14px">${esc(c.sym)}</span>${exLink(inf)}
+      ${stanceBadge(c.stance, c.geoScore)} ${c.cap ? `<span class="badge b-cap b-${c.cap}">${c.cap} cap</span>` : ''}
+      <span class="sub">${esc(c.sector)} › ${esc(c.segName)}${inf.industry ? ' · ' + esc(inf.industry) : ''}</span>
+      <span style="flex:1"></span><button class="btn" id="cu-open">⚙ Customize screen</button></div>
+    <p class="sub" style="font-size:13.5px;margin:4px 0 14px">${esc(c.desc)}${inf.website ? ` · <a href="${esc(inf.website)}" target="_blank" rel="noopener">website</a>` : ''}</p>
+    <div id="cu-slot"></div>
+    <div class="grid">${body}</div>`;
+  bindTabs();
+  document.querySelectorAll('[data-open]').forEach(el => el.onclick = ev => { ev.preventDefault(); openCompany(el.dataset.open); });
+  document.querySelectorAll('#periods [data-p]').forEach(b => b.onclick = () => {
+    PREF.period = b.dataset.p; savePref();
+    document.querySelectorAll('#periods [data-p]').forEach(x => x.classList.toggle('on', x === b)); drawCharts(c, PREF.period); });
+  document.querySelectorAll('#periods [data-dma]').forEach(b => b.onclick = () => {
+    PREF[b.dataset.dma] = !PREF[b.dataset.dma]; savePref(); renderCompany(c, inf, MD, true); });
+  $('#allf') && ($('#allf').onclick = e => { e.preventDefault(); PREF.allFactors = !PREF.allFactors; savePref(); renderCompany(c, inf, MD, true); });
+  $('#go-impact') && ($('#go-impact').onclick = e => { e.preventDefault(); navPushOrigin(); S.view = 'impact'; leaveEntry(); setHash(null); showImpact(); });
+  $('#cu-open').onclick = () => openCustomize(c, inf, MD);
+  bindKeyNumbers(false);
+  drawCharts(c, PREF.period);
+  loadFin(c.id); loadNews(c.id);
+  $('#main').scrollTop = keepScroll ? top : 0;
+  if($('#egoflow')) renderFlow($('#egoflow'), c.id);
+}
+
+function openCustomize(c, inf, MD){
+  const slot = $('#cu-slot');
+  if(slot.innerHTML){ slot.innerHTML = ''; return; }
+  const draw = () => {
+    slot.innerHTML = customizeHTML();
+    const commit = () => { savePref(); renderCompany(c, inf, MD, true); $('#cu-slot').innerHTML = ''; openCustomize(c, inf, MD); };
+    slot.querySelectorAll('[data-cu]').forEach(cb => cb.onchange = () => {
+      const h = new Set(PREF.hidden || []); cb.checked ? h.delete(cb.dataset.cu) : h.add(cb.dataset.cu); PREF.hidden = [...h]; commit(); });
+    const move = (i, d) => { const o = secOrder(); [o[i], o[i + d]] = [o[i + d], o[i]]; PREF.sections = o; commit(); };
+    slot.querySelectorAll('[data-up]').forEach(b => b.onclick = () => move(+b.dataset.up, -1));
+    slot.querySelectorAll('[data-dn]').forEach(b => b.onclick = () => move(+b.dataset.dn, 1));
+    $('#cu-allf').onchange = e => { PREF.allFactors = e.target.checked; commit(); };
+    $('#cu-reset').onclick = () => { Object.assign(PREF, {sections:null, hidden:null, stats:null, period:'1y', dma50:true, dma100:true, zoom:null, allFactors:false}); commit(); };
+    $('#cu-close').onclick = () => { slot.innerHTML = ''; };
+  };
+  draw();
+}
+
+async function loadFin(cid){
+  const box = $('#finbox'); if(!box) return;
+  let d;
+  try { d = await j('/api/financials/' + encId(cid)); } catch { d = {}; }
+  if(cur?.id !== cid || !$('#finbox')) return;
+  if(!d.years?.length){ $('#finbox').innerHTML = '<div class="empty">Financial statements not available from Yahoo for this company yet (try again later).</div>'; return; }
+  const ys = d.years, crs = v => v == null ? '–' : Math.round(v / 1e7).toLocaleString('en-IN');
+  const fy = x => 'FY' + x.slice(2, 4);
+  const yoy = (arr, k, i) => i && arr[i-1][k] > 0 && arr[i][k] != null ? arr[i][k] / arr[i-1][k] - 1 : null;
+  const gcell = v => v == null ? '' : ` <span class="${cls(v)}" style="font-size:11px">${v > 0 ? '+' : ''}${(v*100).toFixed(0)}%</span>`;
+  $('#finbox').innerHTML = `
+    <div class="stats" style="margin-bottom:10px">
+      <div class="stat" data-help="Rev. growth"><div class="k">Sales growth (last FY)</div><div class="v ${cls(d.salesYoY)}">${pctR(d.salesYoY,1)}</div></div>
+      <div class="stat" data-help="Sales CAGR"><div class="k">Sales CAGR (${d.salesCagrYears || '–'}Y)</div><div class="v ${cls(d.salesCagr)}">${pctR(d.salesCagr,1)}</div></div>
+      <div class="stat" data-help="EPS growth"><div class="k">Profit growth (last FY)</div><div class="v ${cls(d.profitYoY)}">${pctR(d.profitYoY,1)}</div></div>
+      <div class="stat" data-help="Profit CAGR"><div class="k">Profit CAGR (${d.profitCagrYears || '–'}Y)</div><div class="v ${cls(d.profitCagr)}">${pctR(d.profitCagr,1)}</div></div>
+      <div class="stat" data-help="ROCE"><div class="k">ROCE (last FY)</div><div class="v">${pctRatio(d.roce)}</div></div>
+    </div>
+    <div class="grid g2">
+      <div style="overflow:auto"><table><thead><tr><th>₹ Cr</th>${ys.map(y => `<th>${fy(y.fy)}</th>`).join('')}</tr></thead><tbody>
+        <tr><td>Sales</td>${ys.map((y, i) => `<td>${crs(y.revenue)}${gcell(yoy(ys, 'revenue', i))}</td>`).join('')}</tr>
+        <tr><td>EBIT</td>${ys.map(y => `<td>${crs(y.ebit)}</td>`).join('')}</tr>
+        <tr><td>Net profit</td>${ys.map((y, i) => `<td>${crs(y.netIncome)}${gcell(yoy(ys, 'netIncome', i))}</td>`).join('')}</tr>
+        <tr><td>EPS (₹)</td>${ys.map(y => `<td>${num(y.eps, 1)}</td>`).join('')}</tr>
+        <tr><td class="hk" data-help="ROCE">ROCE</td>${ys.map(y => `<td>${pctRatio(y.roce)}</td>`).join('')}</tr>
+      </tbody></table>
+      ${d.quarters?.length ? `<div class="sub" style="margin:10px 0 4px">Recent quarters (₹ Cr)</div><table><thead><tr><th></th>${d.quarters.map(q => `<th>${q.q.slice(0, 7)}</th>`).join('')}</tr></thead><tbody>
+        <tr><td>Sales</td>${d.quarters.map(q => `<td>${crs(q.revenue)}</td>`).join('')}</tr>
+        <tr><td>Net profit</td>${d.quarters.map(q => `<td>${crs(q.netIncome)}</td>`).join('')}</tr></tbody></table>` : ''}</div>
+      <div style="height:230px"><canvas id="finc"></canvas></div>
+    </div>
+    <div class="sub" style="margin-top:6px">Source: Yahoo Finance annual statements (it publishes the last ~4 fiscal years, so 5–10-year growth isn't available here; CAGR uses the longest span available).</div>`;
+  await chartReady();
+  finChart?.destroy();
+  if(!$('#finc')) return;
+  finChart = new Chart($('#finc'), {type:'bar', data:{labels:ys.map(y => fy(y.fy)), datasets:[
+      {label:'Sales (₹ Cr)', data:ys.map(y => y.revenue == null ? null : Math.round(y.revenue / 1e7)), backgroundColor:'#377bceaa'},
+      {label:'Net profit (₹ Cr)', data:ys.map(y => y.netIncome == null ? null : Math.round(y.netIncome / 1e7)), backgroundColor:'#137c66aa'}]},
+    options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{labels:{color:'#192c31', boxWidth:12}}},
+      scales:{x:{grid:{color:'#dfe7dd'}, ticks:{color:'#6b7c80'}}, y:{grid:{color:'#dfe7dd'}, ticks:{color:'#6b7c80'}}}}});
+}
+
+const ago = ts => { if(!ts) return ''; const h = (Date.now() / 1000 - ts) / 3600; return h < 1 ? Math.max(1, Math.round(h * 60)) + 'm ago' : h < 48 ? Math.round(h) + 'h ago' : Math.round(h / 24) + 'd ago'; };
+const newsList = items => items?.length ? `<ul class="plain news">${items.map(n => `<li><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a><br><span class="src">${esc(n.source)} · ${ago(n.ts)}</span></li>`).join('')}</ul>`
+  : '<div class="empty">No recent news found.</div>';
+async function loadNews(cid){
+  if(!$('#newsbox')) return;
+  let d; try { d = await j('/api/news?cid=' + encId(cid)); } catch { d = {items: []}; }
+  if(cur?.id !== cid || !$('#newsbox')) return;
+  $('#newsbox').innerHTML = newsList(d.items.slice(0, 8)) + '<div class="sub" style="margin-top:6px">Headlines via Google News (last 30 days). Opens the original article.</div>';
+}
+
+// Chart.js loads with `defer` so it never blocks the first paint
+const chartReady = () => window.Chart ? Promise.resolve() : new Promise(r => { const t = setInterval(() => { if(window.Chart){ clearInterval(t); r(); } }, 50); });
+const PALETTE = ['#377bce','#a36b20','#8662c3','#6cc5a9','#e48fb4','#d9c06a','#6b7c80'];
+async function drawCharts(c, period){
+  const rel = [...c.incoming, ...c.outgoing].filter(x => x.kind === 'company').map(x => x.id);
+  const ids = [...new Set([...rel, ...c.peers.map(x => x.id)])].filter(x => x !== c.id).slice(0, 5);
+  const h = await j(`/api/history/${encId(c.id)}?period=${period}&compare=${ids.map(encodeURIComponent).join(',')}`);
+  await chartReady();
+  if(cur !== c) return;
+  const main = h.series[c.id] || [];
+  const first = main.find(v => v != null), up = main.length && main[main.length-1] >= first;
+  const grid = {color:'#dfe7dd'}, tick = {color:'#6b7c80', maxTicksLimit:8};
+  const wk = ['5y', 'max'].includes(period);
+  priceChart?.destroy(); priceChart = null;
+  if($('#pc')) priceChart = new Chart($('#pc'), {type:'line',
+    data:{labels:h.dates, datasets:[{label:c.id, data:main, borderColor:up ? '#137c66' : '#b24e43', borderWidth:1.6, pointRadius:0, fill:true,
+      backgroundColor:up ? '#137c661f' : '#b24e431f', tension:.15},
+      ...(PREF.dma50 && h.sma50 ? [{label: wk ? '10-week avg' : '50-day avg', data:h.sma50, borderColor:'#a36b20', borderWidth:1.3, pointRadius:0, borderDash:[5,3], fill:false}] : []),
+      ...(PREF.dma100 && h.sma100 ? [{label: wk ? '20-week avg' : '100-day avg', data:h.sma100, borderColor:'#8662c3', borderWidth:1.3, pointRadius:0, borderDash:[5,3], fill:false}] : [])]},
+    options:{responsive:true, maintainAspectRatio:false, interaction:{mode:'index', intersect:false},
+      plugins:{legend:{display:PREF.dma50 || PREF.dma100, labels:{color:'#192c31', boxWidth:12}}, tooltip:{callbacks:{label:x => ' ' + x.dataset.label + ': ' + inr(x.parsed.y)}}}, scales:{x:{grid, ticks:tick}, y:{grid, ticks:{color:'#6b7c80'}}}}});
+  const rebase = arr => { const b = arr.find(v => v != null); return arr.map(v => v == null || !b ? null : +(v / b * 100).toFixed(2)); };
+  const ser = [c.id, ...ids].filter(i => h.series[i]);
+  cmpChart?.destroy(); cmpChart = null;
+  if($('#cc')) cmpChart = new Chart($('#cc'), {type:'line',
+    data:{labels:h.dates, datasets:ser.map((i, k) => ({label:i, data:rebase(h.series[i]), borderColor:PALETTE[k % PALETTE.length], borderWidth:i === c.id ? 2.6 : 1.3, pointRadius:0, tension:.15}))},
+    options:{responsive:true, maintainAspectRatio:false, interaction:{mode:'index', intersect:false},
+      plugins:{legend:{labels:{color:'#192c31', boxWidth:12}}}, scales:{x:{grid, ticks:tick}, y:{grid, ticks:{color:'#6b7c80'}}}}});
+}
+
+/* ================= model page ================= */
+let _meta = null;
+async function modelMeta(){ if(!_meta || _meta.status !== 'ready' || _meta.running) _meta = await j('/api/model'); return _meta; }
+const heatColor = (car, t) => { if(car == null) return ''; const a = Math.min(1, Math.abs(car) / 0.06) * (Math.abs(t||0) >= 1.96 ? 1 : 0.45);
+  return `background:${car >= 0 ? `rgba(108,197,138,${a*0.75})` : `rgba(228,132,121,${a*0.75})`};`; };
+const MS = {mode:'segment', seg:null};
+async function showModel(){
+  S.view = 'model';
+  $('#main').innerHTML = shell('model') + '<div class="loading">Loading…</div>'; bindTabs();
+  _meta = null;
+  const d = await modelMeta();
+  if(S.view !== 'model') return;
+  const evs = d.events || [];      // latest first (server sorts by date)
+  const segKeys = Object.keys(d.segmentEvents || {});
+  if(!MS.seg) MS.seg = S.seg || segKeys[0];
+  $('#main').innerHTML = shell('model') + `
+    <div class="hdr"><span class="sub">status: ${esc(d.status)}${d.running ? ' (recomputing in background…)' : ''}${d.asof ? ' · data through ' + esc(d.asof) : ''}</span></div>
+    ${d.status !== 'ready' || d.running ? `<div class="banner">${esc((d.log || []).slice(-1)[0] || 'Starting…')} ${d.error ? ' — error: ' + esc(d.error) : ''}</div>` : ''}
+    <div class="grid">
+      <div class="card"><h3>In plain words</h3>
+        <ul class="plain" style="line-height:1.65">
+          <li><b>Geo stance (Tailwind / Mixed / Headwind)</b>: we looked at how each stock actually moved, compared with the overall market, in the days after real news shocks
+            (US tariffs, India–Pakistan tension, sanctions, H-1B fee…) and how it would fare in what-if tests (trade war, oil spike, rupee fall).
+            Stocks that held up better than most get <span class="badge b-tailwind">Tailwind</span>, those hurt more get <span class="badge b-headwind">Headwind</span>.
+            A company also inherits a little of the strength or weakness of its suppliers and customers.</li>
+          <li><b>Macro sensitivity</b>: how the stock usually moves when crude oil, the rupee, gold or the market move, learned from two years of daily prices.</li>
+          <li><b>Event study</b>: for each news event, how much more (or less) the stock moved than the market in the following days.</li>
+          <li><b>Stress test / Who benefits?</b>: plug a scenario (e.g. crude +25%) into the sensitivities to estimate which stocks gain or lose most.</li>
+          <li><b>Similar stocks</b>: stocks whose own (non-market) ups and downs move together, so news about one often moves the other.</li>
+        </ul>
+        <div class="sub">These are statistics from past prices, not forecasts or advice. Big, unusual shocks can behave differently.</div>
+        <details class="tech"><summary>Technical methodology (for the curious)</summary><ol style="margin:0;padding-left:20px;line-height:1.6">
+          <li><b>Multi-factor macro model</b> per stock over ~2 years of daily returns:
+            <span class="mono">rᵢ = α + β·Nifty + β·USDINR + β·Brent₍ₜ₋₁₎ + β·S&amp;P500₍ₜ₋₁₎ + β·ΔUS10Y₍ₜ₋₁₎ + β·Gold₍ₜ₋₁₎ + β·HangSeng + β·VIX⊥ + ε</span>.
+            OLS with Newey-West (HAC, 5 lags) standard errors. US-traded factors are lagged one session; India VIX is orthogonalised to Nifty.</li>
+          <li><b>Event study</b> (Brown–Warner market model): abnormal return ARₜ = rₜ − (a + b·r_Nifty), parameters estimated on sessions [−260, −11];
+            CAR over the event window; SCAR = CAR / (σ_ε√L) as the t-statistic.</li>
+          <li><b>Stress tests</b>: Σ βₖ·shockₖ − shock_Nifty, i.e. first-order expected return relative to the market under each scenario.</li>
+          <li><b>Geopolitical score</b> = ½·z(mean SCAR over shock events) + ½·z(mean stress excess over trade-war, oil-shock, rupee-slide), winsorised at ±3σ;
+            then <b>propagated over the supply/ownership graph</b>: s_net = (1−α)(I − αW)⁻¹s with W the row-normalised adjacency (α = ${d.params?.net_alpha ?? '–'}).
+            Tailwind &gt; +0.5, headwind &lt; −0.5.</li>
+          <li><b>Similarity</b>: Ledoit-Wolf shrunk correlation of factor-model residuals + average-linkage hierarchical clustering on √(2(1−ρ)).</li>
+          <li><b>Edge evidence</b>: for each listed→listed relationship, residual correlation and Granger-causality F-test (lags 1–3) in both directions, Bonferroni across lags and Benjamini-Hochberg FDR across all edges.</li>
+          <li><b>Risk</b>: GARCH(1,1) with Student-t errors (1-day forecast, annualised), realised vol, beta, Jensen's α (r_f = ${((d.params?.rf ?? 0)*100).toFixed(1)}%), Sharpe, Sortino, max drawdown, historical VaR/CVaR 95%, 12-1 momentum, 6-month log-linear trend.</li>
+        </ol>
+        <div class="sub" style="margin-top:8px">Factors: ${Object.entries(d.factors || {}).map(([k,v]) => `<span class="mono">${k}</span> = ${esc(v)}`).join(' · ')}</div>
+        <div class="sub" style="margin-top:4px">Limits: linear betas under large shocks are approximations; event windows can overlap other news; Granger causality is predictive, not causal. The relationship graph is curated and can be incomplete.</div></details></div>
+
+      <div class="card" id="heatmap"><h3>Reaction to each news event — latest first</h3>
+        <div class="zbar">
+          <button class="chip ${MS.mode === 'segment' ? 'on' : ''}" data-mm="segment">Segment-wise</button>
+          <button class="chip ${MS.mode === 'company' ? 'on' : ''}" data-mm="company">Company-wise</button>
+          ${MS.mode === 'company' ? `<select id="mseg">${S.tree.map(t => `<optgroup label="${esc(t.sector)}">${t.segments.map(g => `<option value="${g.key}" ${g.key === MS.seg ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}</optgroup>`).join('')}</select>` : ''}
+          <span class="sub">Cell = % move beyond the market in the event window. Bold colour = statistically significant. Click a company to open it.</span>
+        </div>
+        <div style="overflow:auto" id="heatbody"><div class="loading">Loading…</div></div>
+        ${d.pendingEvents?.length ? `<div class="sub" style="margin-top:6px">Waiting for the next model run: ${d.pendingEvents.map(e => esc(e.name)).join(', ')}</div>` : ''}
+      </div>
+
+      <div class="card"><h3>Add a news event to the model</h3>
+        <div class="sub">Add a recent geopolitical / economic event (date of the news). The event study and the geo stance are then recomputed, which takes a few minutes. ${d.canEdit ? '' : '<b>Only the site owner can add events</b> (open the site from the server machine, or set ADMIN_TOKEN).'}</div>
+        <div class="form-row">
+          <input type="date" id="ev-day" max="${new Date().toISOString().slice(0,10)}">
+          <input type="text" id="ev-name" placeholder="e.g. US–India trade deal signed" style="flex:1;min-width:240px">
+          <label class="sub">window <select id="ev-win">${[1,2,3,5,10].map(w => `<option ${w === 3 ? 'selected' : ''}>${w}</option>`).join('')}</select> days</label>
+          <label class="sub"><input type="checkbox" id="ev-shock" checked> geopolitical shock (feeds geo score)</label>
+          <input type="password" id="ev-tok" placeholder="admin token" style="width:120px;${d.canEdit ? 'display:none' : ''}">
+          <button class="btn" id="ev-add">Add event</button><span class="sub" id="ev-msg"></span>
+        </div>
+        ${evs.some(e => e.custom) ? `<div class="sub" style="margin-top:10px">Added events: ${evs.filter(e => e.custom).map(e => `${esc(e.day)} ${esc(e.name)} <a href="#" data-del="${esc(e.id)}">remove</a>`).join(' · ')}</div>` : ''}
+      </div>
+
+      <div class="card"><h3>Scenarios</h3><table><tbody>${(d.scenarios||[]).map(s => `<tr><td style="text-align:left"><b>${esc(s.name)}</b></td><td class="sub" style="text-align:left">${Object.entries(s.shocks).map(([k,v]) => `${esc(d.factors?.[k] || k)} ${v > 0 ? '+' : ''}${k === 'UST10' ? v + 'pp' : (v*100).toFixed(0) + '%'}`).join(', ')}</td></tr>`).join('')}</tbody></table>
+        <div class="sub" style="margin-top:6px">See who gains or loses under each one, or build your own, on the <b>Who benefits?</b> tab.</div></div>
+    </div>`;
+  bindTabs();
+  document.querySelectorAll('[data-mm]').forEach(b => b.onclick = () => { MS.mode = b.dataset.mm; showModel(); });
+  $('#mseg') && ($('#mseg').onchange = e => { MS.seg = e.target.value; drawHeat(d); });
+  $('#ev-add').onclick = async () => {
+    const body = {day: $('#ev-day').value, name: $('#ev-name').value.trim(), win: +$('#ev-win').value, shock: $('#ev-shock').checked};
+    if(!body.day || !body.name){ $('#ev-msg').textContent = 'Enter a date and a name.'; return; }
+    const r = await fetch('/api/events', {method:'POST', headers:{'Content-Type':'application/json', 'X-Admin-Token': $('#ev-tok').value}, body: JSON.stringify(body)});
+    $('#ev-msg').textContent = r.ok ? 'Added. Recomputing models (a few minutes)…' : r.status === 403 ? 'Not allowed: owner only.' : 'Invalid date or name.';
+    if(r.ok){ S.model = 'pending'; setTimeout(pollModel, 3000); }
+  };
+  document.querySelectorAll('[data-del]').forEach(a => a.onclick = async e => { e.preventDefault();
+    const r = await fetch('/api/events/' + encodeURIComponent(a.dataset.del), {method:'DELETE', headers:{'X-Admin-Token': $('#ev-tok').value}});
+    if(r.ok){ S.model = 'pending'; setTimeout(pollModel, 3000); showModel(); } else $('#ev-msg').textContent = 'Not allowed: owner only.'; });
+  drawHeat(d);
+}
+async function drawHeat(d){
+  const evs = d.events || [], box = $('#heatbody');
+  const head = `<thead><tr><th style="text-align:left">${MS.mode === 'company' ? 'Company' : 'Segment'}</th>${evs.map(e => `<th title="${esc(e.name)}" style="white-space:normal;min-width:76px;font-size:10.5px;text-align:center">${esc(e.name.split('(')[0])}<br><span class="sub">${esc(e.day)}</span></th>`).join('')}</tr></thead>`;
+  if(MS.mode === 'segment'){
+    const segs = Object.keys(d.segmentEvents || {});
+    box.innerHTML = `<table class="heat">${head}<tbody>${segs.map(s => `<tr><td style="text-align:left;white-space:nowrap">${esc(d.segments[s])}</td>${evs.map(e => { const x = d.segmentEvents[s][e.id];
+      return `<td style="${x ? heatColor(x.car, x.t) : ''}" title="n=${x?.n ?? 0}, t=${x?.t ?? '–'}">${x ? (x.car*100).toFixed(1) : ''}</td>`; }).join('')}</tr>`).join('')}</tbody></table>`;
+    return;
+  }
+  box.innerHTML = '<div class="loading">Loading…</div>';
+  const rows = await j('/api/eventgrid?seg=' + encodeURIComponent(MS.seg));
+  box.innerHTML = `<table class="heat">${head}<tbody>${rows.map(r => `<tr class="click" data-cid="${esc(r.id)}" data-open="${esc(r.id)}"><td style="text-align:left;white-space:nowrap"><span class="nm">${esc(r.name)}</span><span class="tk">${esc(r.id)}</span></td>${evs.map(e => { const x = r.ev[e.id];
+    return `<td style="${x ? heatColor(x.car, x.t) : ''}" title="t=${x?.t ?? '–'}">${x ? (x.car*100).toFixed(1) : ''}</td>`; }).join('')}</tr>`).join('')}</tbody></table>`;
+  box.querySelectorAll('[data-open]').forEach(tr => tr.onclick = () => openCompany(tr.dataset.open));
+}
+
+/* ================= who benefits? (scenario / event impact ranking) ================= */
+const IM = {kind:'scenario', id:'oil_shock', custom:{BRENT:0.2, USDINR:0, MKT:0, GOLD:0, SPX:0, HSI:0, UST10:0, VIX:0}, n:20};
+const SLIDERS = {BRENT:['Crude oil', -50, 50, 1], USDINR:['USD/INR (+ = rupee weaker)', -10, 10, 0.5], GOLD:['Gold', -20, 20, 1], MKT:['Nifty', -15, 15, 1],
+  SPX:['S&P 500', -20, 20, 1], HSI:['Hang Seng (China)', -20, 20, 1], UST10:['US 10Y yield (pp)', -1, 1, 0.05], VIX:['India VIX (fear)', -50, 100, 5]};
+async function showImpact(){
+  S.view = 'impact';
+  $('#main').innerHTML = shell('impact') + '<div class="loading">Loading…</div>'; bindTabs();
+  const d = await modelMeta();
+  if(S.view !== 'impact') return;
+  const opts = [...(d.scenarios || []).map(s => ['scenario', s.id, '📊 Scenario: ' + s.name]),
+                ['custom', 'custom', '🎛 My own scenario (sliders)'],
+                ...(d.events || []).map(e => ['event', e.id, '📰 Past event: ' + e.day + ' · ' + e.name])];
+  const sel = IM.kind + ':' + IM.id;
+  $('#main').innerHTML = shell('impact') + `
+    <div class="hdr"><span class="sub">${esc(scopeLabel())} · pick a scope in the left pane</span></div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="form-row" style="margin-top:0"><select id="im-sel" style="max-width:100%">${opts.map(([k, id, l]) => `<option value="${k}:${esc(id)}" ${sel === k + ':' + id ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+        <label class="sub">show top <select id="im-n">${[10,20,30,50].map(n => `<option ${n === IM.n ? 'selected' : ''}>${n}</option>`).join('')}</select></label></div>
+      ${IM.kind === 'custom' ? `<div class="sliders" style="margin-top:12px">${Object.entries(SLIDERS).map(([k, [l, mn, mx, st]]) => {
+        const v = k === 'UST10' ? IM.custom[k] : +(IM.custom[k] * 100).toFixed(2);
+        return `<label>${esc(l)}: <b data-sv="${k}" style="color:var(--text)">${v > 0 ? '+' : ''}${v}${k === 'UST10' ? 'pp' : '%'}</b><input type="range" data-sl="${k}" min="${mn}" max="${mx}" step="${st}" value="${v}"></label>`; }).join('')}</div>` : ''}
+      <div class="sub" style="margin-top:8px">${IM.kind === 'event'
+        ? 'Ranking = actual move beyond the market in the event window (event study). Stars = statistically unusual.'
+        : 'Ranking = expected return <b>relative to Nifty</b> using each stock\'s measured sensitivity to crude, rupee, gold, global markets… (linear estimate; real outcomes vary).'}</div>
+    </div>
+    <div id="im-body"><div class="loading">Computing…</div></div>`;
+  bindTabs();
+  $('#im-sel').onchange = e => { const [k, ...rest] = e.target.value.split(':'); IM.kind = k; IM.id = rest.join(':'); showImpact(); };
+  $('#im-n').onchange = e => { IM.n = +e.target.value; drawImpact(); };
+  let tm = null;
+  document.querySelectorAll('[data-sl]').forEach(r => r.oninput = () => {
+    const k = r.dataset.sl, v = +r.value;
+    IM.custom[k] = k === 'UST10' ? v : v / 100;
+    document.querySelector(`[data-sv="${k}"]`).textContent = (v > 0 ? '+' : '') + v + (k === 'UST10' ? 'pp' : '%');
+    clearTimeout(tm); tm = setTimeout(drawImpact, 250);
+  });
+  drawImpact();
+}
+async function drawImpact(){
+  const qs = new URLSearchParams(scopeQS());
+  qs.set('kind', IM.kind); qs.set('id', IM.id);
+  if(IM.kind === 'custom'){ for(const [k, v] of Object.entries(IM.custom)) if(v) qs.set(k, v); if(IM.custom.VIX) qs.set('VIX', Math.log(1 + IM.custom.VIX)); }
+  const d = await j('/api/impact?' + qs);
+  if(S.view !== 'impact') return;
+  const rows = d.rows, n = IM.n;
+  if(!rows.length){ $('#im-body').innerHTML = '<div class="empty">No model results for this scope yet.</div>'; return; }
+  const mx = Math.max(...rows.map(r => Math.abs(r.impact))) || 1;
+  const tbl = (list, start) => `<table><thead><tr><th>#</th><th style="text-align:left">Company</th><th>${IM.kind === 'event' ? 'Move vs market' : 'Expected vs Nifty'}</th><th>${IM.kind === 'event' ? 't' : 'Main driver'}</th></tr></thead><tbody>
+    ${list.map((r, i) => `<tr class="click" data-cid="${esc(r.id)}" data-open="${esc(r.id)}"><td class="sub">${start(i)}</td>
+      <td style="text-align:left"><span class="nm">${esc(r.name)}</span><span class="tk">${esc(r.id)}</span>${exLink(r)}<br><span class="sub">${esc(r.segName)}</span> ${r.cap ? `<span class="badge b-cap">${r.cap}</span>` : ''}</td>
+      <td class="${cls(r.impact)}"><span class="impact-bar" style="width:${Math.round(Math.abs(r.impact) / mx * 70)}px;background:${r.impact >= 0 ? 'var(--up)' : 'var(--down)'}"></span> <b>${pctR(r.impact, 1)}</b></td>
+      <td class="sub">${IM.kind === 'event' ? num(r.t, 2) + `<span class="sig">${stars(r.t)}</span>` : esc(d.factors[r.driver] || r.driver || '–').split('(')[0]}</td></tr>`).join('')}</tbody></table>`;
+  const top = rows.slice(0, n), bot = rows.slice(-n).reverse();
+  $('#im-body').innerHTML = `<div class="grid g2">
+      <div class="card"><h3 style="color:var(--up)">▲ Benefit most (${rows.length} ranked)</h3>${tbl(top, i => i + 1)}</div>
+      <div class="card"><h3 style="color:var(--down)">▼ Hurt most</h3>${tbl(bot, i => rows.length - i)}</div>
+    </div>
+    <div class="card" style="margin-top:12px"><h3>By segment (average)</h3><table><tbody>
+      ${d.segments.map(([sg, v, c]) => `<tr><td>${esc(sg)} <span class="sub">(${c})</span></td><td class="${cls(v)}" style="text-align:left"><span class="impact-bar" style="width:${Math.round(Math.abs(v) / mx * 160)}px;background:${v >= 0 ? 'var(--up)' : 'var(--down)'}"></span> ${pctR(v, 2)}</td></tr>`).join('')}
+    </tbody></table></div>`;
+  document.querySelectorAll('#im-body [data-open]').forEach(tr => tr.onclick = () => openCompany(tr.dataset.open));
+}
+
+/* ================= news ================= */
+const NEWS_T = {market:'Indian markets', geo:'Geopolitics & trade', economy:'Economy, RBI & rupee', global:'Crude, dollar & global'};
+let newsTopic = 'market';
+async function showNews(){
+  S.view = 'news';
+  $('#main').innerHTML = shell('news') + `<div class="hdr"><span class="sub">Google News headlines, last 30 days · refreshed every 30 min</span></div>
+    <div class="chips" style="margin-bottom:12px">${Object.entries(NEWS_T).map(([k, l]) => `<button class="chip ${k === newsTopic ? 'on' : ''}" data-nt="${k}">${l}</button>`).join('')}</div>
+    <div class="card" id="newsmain"><div class="loading">Loading…</div></div>`;
+  bindTabs();
+  document.querySelectorAll('[data-nt]').forEach(b => b.onclick = () => { newsTopic = b.dataset.nt; showNews(); });
+  const d = await j('/api/news?topic=' + newsTopic).catch(() => ({items: []}));
+  if(S.view !== 'news') return;
+  $('#newsmain').innerHTML = newsList(d.items) + '<div class="sub" style="margin-top:8px">Each stock screen also has its own <b>Latest news</b> card.</div>';
+}
+
+/* ================= hover tooltip ================= */
+async function getInfo(cid){
+  if(!infoCache[cid]) infoCache[cid] = j('/api/info/' + encId(cid)).catch(e => { delete infoCache[cid]; throw e; });
+  return infoCache[cid];
+}
+let tipTimer = null, tipFor = null, mouse = {x:0, y:0};
+const tip = $('#tip');
+function placeTip(){
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = mouse.x + 18, y = mouse.y + 14;
+  if(x + w > innerWidth - 8) x = mouse.x - w - 18;
+  if(y + h > innerHeight - 8) y = Math.max(8, innerHeight - h - 8);
+  tip.style.left = Math.max(8, x) + 'px'; tip.style.top = y + 'px';
+}
+function hideTip(){ clearTimeout(tipTimer); tipFor = null; tip.style.display = 'none'; }
+function tipHTML(d){
+  const m = d.metrics || {}, r = d.risk || {};
+  const rows = [
+    ['Price', `${inr(m.price)} <span class="${cls(m.d1)}">${pct(m.d1)}</span>`],
+    ['1M / 1Y', `<span class="${cls(m.m1)}">${pct(m.m1)}</span> / <span class="${cls(m.y1)}">${pct(m.y1)}</span>`],
+    ['52W range', `${inr(m.lo52)} – ${inr(m.hi52)}`],
+    ['Market cap', `${cr(d.marketCap)}${d.cap ? ' · ' + d.cap : ''}`],
+    ['Revenue (TTM)', cr(d.totalRevenue)],
+    ['P/E · P/B', `${num(d.trailingPE)} · ${num(d.priceToBook)}`],
+    ['ROE · Net margin', `${pctRatio(d.returnOnEquity)} · ${pctRatio(d.profitMargins)}`],
+    ['Rev growth · D/E', `${pctRatio(d.revenueGrowth)} · ${num(d.debtToEquity)}`],
+    ['GARCH vol · β', `${pctRatio(r.garch_vol)} · ${num(r.beta,2)}`],
+    ['Geo score', d.geoScore == null ? '–' : num(d.geoScore,2) + 'σ'],
+  ];
+  return `<div class="t">${esc(d.name)} ${stanceBadge(d.stance)}</div>
+    <div class="sub">${esc(d.sector)} › ${esc(d.segName)}</div><div class="d">${esc(d.desc)}</div>
+    <table>${rows.map(([k,v]) => `<tr><td>${k}</td><td style="text-align:right">${v}</td></tr>`).join('')}</table>${spark(m.spark, 300, 40)}`;
+}
+function tipStart(cid, ev){
+  if(ev) mouse = {x:ev.clientX, y:ev.clientY};
+  if(cid === tipFor) return;
+  hideTip(); tipFor = cid;
+  tipTimer = setTimeout(async () => {
+    tip.innerHTML = '<div class="sub">Loading…</div>'; tip.style.display = 'block'; placeTip();
+    try { const d = await getInfo(cid); if(tipFor === cid){ tip.innerHTML = tipHTML(d); placeTip(); } }
+    catch { if(tipFor === cid) tip.innerHTML = '<div class="sub">Could not load data.</div>'; }
+  }, 220);
+}
+function helpStart(hEl){
+  const key = 'help:' + hEl.dataset.help + '|' + (hEl.dataset.extra || '');
+  if(key === tipFor) return;
+  hideTip(); tipFor = key;
+  tipTimer = setTimeout(() => {
+    if(tipFor !== key) return;
+    tip.innerHTML = helpHTML(hEl.dataset.help, hEl.dataset.extra); tip.style.display = 'block'; placeTip();
+  }, 150);
+}
+document.addEventListener('mousemove', e => { mouse = {x:e.clientX, y:e.clientY}; if(tip.style.display === 'block') placeTip(); });
+document.addEventListener('mouseover', e => {
+  if(e.target.closest('canvas')) return;          // graph nodes handle their own hover
+  const el = e.target.closest('[data-cid]');
+  const hEl = e.target.closest('[data-help]');
+  if(hEl && HELP[hEl.dataset.help] && (!el || el.contains(hEl))){ helpStart(hEl); return; }
+  const cid = el?.dataset.cid;
+  if(!cid){ if(tipFor) hideTip(); return; }
+  if(S.view === 'detail' && cur && cid === cur.id) return;
+  tipStart(cid);
+});
+
+/* ================= boot ================= */
+/* search: suggestions (all sectors, biggest first) as you type; Enter = show all matches in the list */
+const QS = {items: [], i: -1};
+function sugHTML(){
+  const q = S.q.trim().toLowerCase();
+  if(!q || !S.all){ return ''; }
+  const hits = S.all.filter(c => matchQ(c, q));
+  const pre = c => c.id.toLowerCase().startsWith(q) || c.name.toLowerCase().startsWith(q) || c.name.toLowerCase().split(/[\s\-()&]+/).some(w => w.startsWith(q));
+  hits.sort((a, b) => (pre(b) - pre(a)) || (b.mcap || 0) - (a.mcap || 0));
+  QS.items = hits.slice(0, 25);
+  if(!QS.items.length) return '<div class="sghead">No company matches.</div>';
+  return `<div class="sghead">${hits.length} match${hits.length > 1 ? 'es' : ''} · sorted by market cap · ↑↓ Enter</div>` +
+    QS.items.map((c, k) => `<div class="sg ${k === QS.i ? 'on' : ''}" data-k="${k}">
+      <span class="nm"><b>${esc(c.name)}</b> <span class="tk">${esc(c.id)}</span></span>
+      <span class="sub">${cr(c.mcap)}</span><span class="${cls(c.y1)}" style="min-width:48px;text-align:right">${pct(c.y1)}</span></div>`).join('') +
+    (hits.length > QS.items.length ? `<div class="sg" data-all="1"><span class="nm" style="color:var(--accent)">Show all ${hits.length} in the list →</span></div>` : '');
+}
+function showSug(){
+  const box = $('#qsug'); const h = sugHTML();
+  box.innerHTML = h; box.style.display = h ? 'block' : 'none';
+  box.querySelectorAll('.sg').forEach(el => el.onmousedown = ev => { ev.preventDefault();
+    if(el.dataset.all) return qToList(); pickSug(+el.dataset.k); });
+}
+function hideSug(){ $('#qsug').style.display = 'none'; QS.i = -1; }
+function pickSug(k){ const c = QS.items[k]; if(!c) return; hideSug(); $('#q').blur(); openCompany(c.id); }
+function qToList(){ hideSug(); if(S.view !== 'list'){ S.view = 'list'; leaveEntry(); setHash(null); loadList(); } else renderList(); }
+$('#q').addEventListener('input', e => { S.q = e.target.value; QS.i = -1; showSug(); if(S.view === 'list') renderList(); });
+$('#q').addEventListener('focus', showSug);
+$('#q').addEventListener('blur', () => setTimeout(hideSug, 150));
+$('#q').addEventListener('keydown', e => {
+  if(e.key === 'ArrowDown'){ e.preventDefault(); QS.i = Math.min(QS.items.length - 1, QS.i + 1); showSug(); }
+  else if(e.key === 'ArrowUp'){ e.preventDefault(); QS.i = Math.max(-1, QS.i - 1); showSug(); }
+  else if(e.key === 'Enter'){ e.preventDefault(); QS.i >= 0 ? pickSug(QS.i) : qToList(); }
+  else if(e.key === 'Escape'){ hideSug(); }
+});
+async function pollModel(){
+  if(S.model === 'ready') return;
+  try {
+    const m = await j('/api/model');
+    if(m.status === 'ready' && !m.running){ S.model = 'ready'; _meta = m; await loadTree(); if(S.view !== 'detail') refreshView(); else if(cur) openCompany(cur.id, false); return; }
+    const b = $('#mbanner'); if(b && m.log?.length) b.textContent = 'Quant models computing: ' + m.log[m.log.length-1] + (m.error ? ' — error: ' + m.error : '');
+    if(m.status === 'error') return;
+  } catch {}
+  setTimeout(pollModel, 5000);
+}
+(async () => {
+  try {
+    $('#app').classList.toggle('noright', !PREF.right);
+    const allP = companies('').then(d => { S.all = d; if(S.q) showSug(); });
+    await loadTree();
+    const total = S.tree.reduce((a, s) => a + s.count, 0);
+    $('#asof').textContent = `${total} listed companies · ${S.tree.length} sectors`;
+    const hash = decodeURIComponent(location.hash.slice(1));
+    history.replaceState({app: 'base'}, '', location.href);
+    history.pushState({app: 'top'}, '', location.href);
+    if(hash === 'model'){ S.view = 'model'; showModel(); }          // http://…/#model opens the Model tab (heatmap)
+    else if(hash) openCompany(hash).catch(() => loadList()); else loadList();
+    pollModel();
+    // Help remains available from the header without covering the research workspace.
+  } catch(e) {
+    $('#main').innerHTML = `<div class="loading">Failed to load data: ${esc(e.message)}. Is the network up?</div>`;
+  }
+})();
+</script>
+
+</body>
+</html>

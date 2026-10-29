@@ -1,0 +1,28 @@
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local provider data and running processes
+/cache/
+/run/
+/bin/
+/data/custom_events.json
+/public/
+
+# Environment files and local tool state
+.env
+.env.*
+!.env.example
+.aws/
+.agents/
+.codex/
+
+# Review screenshots and system files
+/*-preview.png
+.DS_Store
+Thumbs.db

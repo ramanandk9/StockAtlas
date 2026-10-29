@@ -1,0 +1,102 @@
+<header class="stock-navigation">
+  <div class="navigation-row">
+    <a class="stock-brand" href="/#welcome" aria-label="StockAtlas home"
+      ><img
+        src="{{ url_for('static', filename='tmrm-logo.svg') }}"
+        alt=""
+        width="22"
+        height="36"
+      /><span>StockAtlas</span></a
+    >
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a
+        href="{{ '/#explore' if research_mode else '#explore' }}"
+        {%
+        if
+        not
+        research_mode
+        %}data-primary="explore"
+        {%
+        endif
+        %}
+        >Explore</a
+      >
+      <a
+        href="/research"
+        {%
+        if
+        research_mode
+        %}class="active"
+        aria-current="page"
+        {%
+        endif
+        %}
+        >Research</a
+      >
+      <a
+        href="{{ '/#saved' if research_mode else '#saved' }}"
+        {%
+        if
+        not
+        research_mode
+        %}data-primary="saved"
+        {%
+        endif
+        %}
+        >Saved <b id="saved-count" aria-label="0 saved organisations">0</b></a
+      >
+      <a
+        href="{{ '/#guide' if research_mode else '#guide' }}"
+        {%
+        if
+        not
+        research_mode
+        %}data-primary="guide"
+        {%
+        endif
+        %}
+        >Guide</a
+      >
+    </nav>
+    <div
+      class="data-freshness"
+      id="data-freshness"
+      role="status"
+      aria-live="polite"
+    >
+      <span id="data-updated-date">Checking data date…</span>
+      <small id="data-refresh-progress" hidden></small>
+    </div>
+  </div>
+  {% if research_mode %}
+  <div class="tools-row">
+    <nav class="research-menu section-nav" aria-label="Research tools">
+      <button class="tab" data-v="list">Stock screener</button>
+      <button class="tab" data-v="impact">Scenarios</button>
+      <button class="tab" data-v="news">News</button>
+      <button class="tab" data-v="model">Methodology</button>
+    </nav>
+    <div class="navigation-actions">
+      <button
+        class="btn"
+        id="popen"
+        onclick="setRight(!PREF.right)"
+        aria-label="Toggle connections side panel"
+      >
+        Side panel
+      </button>
+      <a class="btn menu-help" href="/#welcome">How to use</a>
+    </div>
+  </div>
+  {% else %}
+  <nav
+    id="explore-tools"
+    class="section-nav tools-row"
+    aria-label="Explore tools"
+  >
+    <a href="#explore" data-view="explore">Relationship map</a>
+    <a href="#directory" data-view="directory">Directory</a>
+    <a href="#paths" data-view="paths">Find connection</a>
+  </nav>
+  {% endif %}
+</header>
